@@ -18,6 +18,15 @@ neither implements local-decode-plus-jti-blacklist verification (one does
 remote-validate-with-cache, the other does bare decode with no revocation
 check at all). See this PR's report for detail. A future PR may extract a
 true shared package once this pattern has proven itself in both repos.
+
+SSO Phase 2 PR16: adds RS256/JWKS verification alongside the existing
+HS256 shared-secret path, dispatched by the token's own `alg` header --
+the same "verify by declared alg, not by config" approach
+omnibioai-auth/app/core/jwt.py::decode_token already uses so a token
+issued today (HS256) and one issued after a future RS256 cutover both
+keep validating here without a coordinated flag flip. JWT_ALGORITHM=RS256
+is NOT enabled anywhere yet -- this PR only prepares this service to
+verify RS256 tokens once that switch is made in a later, separate change.
 """
 from __future__ import annotations
 
@@ -26,10 +35,25 @@ from typing import Any
 
 import jwt
 import redis
+from jwt import PyJWKClient
+from jwt.exceptions import PyJWKClientError
 
 from audit.config import AuditConfig
 
 JWT_SECRET = os.environ.get("JWT_SECRET", "change-me")
+
+# omnibioai-auth's JWKS endpoint (app/api/routes_jwks.py) -- publishes the
+# public half of whatever key app/core/rsa_keys.py loaded/generated, keyed
+# by `kid`. Only ever consulted for a token whose header already declares
+# alg=RS256; an HS256 token never triggers a fetch.
+JWKS_URL = os.environ.get(
+    "JWKS_URL", "https://auth.omnibioai.org/.well-known/jwks.json"
+)
+JWKS_TIMEOUT_SECONDS = int(os.environ.get("JWKS_TIMEOUT_SECONDS", "5"))
+# How long a fetched key set is trusted before the next RS256 verification
+# re-fetches it. Independent of the "unknown kid -> refresh immediately"
+# path in _decode(), which ignores this TTL entirely.
+JWKS_CACHE_TTL_SECONDS = int(os.environ.get("JWKS_CACHE_TTL_SECONDS", "300"))
 
 # Same Redis instance and key convention as omnibioai-auth's own
 # token_revocation.py::_blacklist ("blacklist:jti:{jti}", checked via
@@ -37,6 +61,23 @@ JWT_SECRET = os.environ.get("JWT_SECRET", "change-me")
 # service's own documented tradeoff: a Redis blip must not 401 every
 # request in this service either.
 _blacklist = redis.from_url(AuditConfig.REDIS_URL, decode_responses=True)
+
+# Lazy singleton: importing this module must never make a network call --
+# only the first RS256 token that actually arrives pays for the initial
+# JWKS fetch. PyJWKClient itself caches the fetched key set for
+# JWKS_CACHE_TTL_SECONDS and transparently refetches once if a requested
+# kid isn't in the cached set (see its get_signing_key()), which is the
+# "refresh cache on unknown kid" behavior this PR requires.
+_jwks_client: PyJWKClient | None = None
+
+
+def _get_jwks_client() -> PyJWKClient:
+    global _jwks_client
+    if _jwks_client is None:
+        _jwks_client = PyJWKClient(
+            JWKS_URL, timeout=JWKS_TIMEOUT_SECONDS, lifespan=JWKS_CACHE_TTL_SECONDS
+        )
+    return _jwks_client
 
 
 class TokenInvalid(Exception):
@@ -47,18 +88,58 @@ class TokenInvalid(Exception):
     """
 
 
+def _decode(token: str) -> dict[str, Any]:
+    """Verifies signature + expiry, dispatched by the token's own `alg`
+    header rather than by any local config -- mirrors omnibioai-auth's own
+    decode_token(). Every exit that doesn't return a signature-verified
+    payload raises TokenInvalid: unknown/missing alg, unresolvable kid,
+    unreachable JWKS endpoint, and bad signature all fail closed. There is
+    no path that returns a payload without a verified signature."""
+    try:
+        header = jwt.get_unverified_header(token)
+    except jwt.InvalidTokenError as e:
+        raise TokenInvalid(f"invalid token: {e}")
+
+    alg = header.get("alg")
+
+    if alg == "RS256":
+        kid = header.get("kid")
+        if not kid:
+            raise TokenInvalid("RS256 token missing kid header")
+        try:
+            signing_key = _get_jwks_client().get_signing_key(kid).key
+        except PyJWKClientError as e:
+            raise TokenInvalid(f"unable to resolve signing key: {e}")
+        except Exception as e:
+            # Covers JWKS-endpoint timeouts/connection errors and any
+            # other fetch failure -- fail closed rather than falling back
+            # to an unverified path.
+            raise TokenInvalid(f"jwks fetch failed: {e}")
+        try:
+            return jwt.decode(token, signing_key, algorithms=["RS256"])
+        except jwt.ExpiredSignatureError:
+            raise TokenInvalid("expired")
+        except jwt.InvalidTokenError as e:
+            raise TokenInvalid(f"invalid token: {e}")
+
+    if alg == "HS256":
+        try:
+            return jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
+        except jwt.ExpiredSignatureError:
+            raise TokenInvalid("expired")
+        except jwt.InvalidTokenError as e:
+            raise TokenInvalid(f"invalid token: {e}")
+
+    raise TokenInvalid(f"unsupported alg: {alg!r}")
+
+
 def verify_token(token: str | None) -> dict[str, Any]:
     """Decodes and verifies `token`. Returns the decoded payload on
     success; raises TokenInvalid on any failure."""
     if not token:
         raise TokenInvalid("missing token")
 
-    try:
-        payload = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
-    except jwt.ExpiredSignatureError:
-        raise TokenInvalid("expired")
-    except jwt.InvalidTokenError as e:
-        raise TokenInvalid(f"invalid token: {e}")
+    payload = _decode(token)
 
     # Permissive by design: omnibioai-auth's refresh tokens carry the same
     # claim set as access tokens (build_user_claims), differing only in
