@@ -1,0 +1,8 @@
+fastapi
+uvicorn
+redis[asyncio]
+pydantic
+sqlalchemy
+alembic>=1.13,<2
+pymysql
+PyJWT>=2.8

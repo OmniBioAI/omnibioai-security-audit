@@ -1,7 +1,9 @@
 import json
 import pytest
-from consumers.processor import process_event
-from consumers.sink import Sink
+from datetime import datetime
+
+from audit.models import AuditEvent
+from consumers.processor import process_event, parse_audit_event
 
 
 # ---------------------------------------------------------------------------
@@ -54,16 +56,57 @@ def test_process_event_returns_dict():
 
 
 # ---------------------------------------------------------------------------
-# Sink
+# parse_audit_event (PR4.2: full-fidelity parse for durable persistence,
+# unlike process_event's lossy user/event/decision summary above)
 # ---------------------------------------------------------------------------
 
-def test_sink_write_does_not_raise():
-    sink = Sink()
-    # write prints to stdout — just verify no exception
-    sink.write({"user": "u1", "event": "test"})
+def test_parse_audit_event_returns_audit_event():
+    raw = json.dumps({
+        "event_id": "evt-1",
+        "timestamp": "2026-01-01T12:00:00",
+        "service": "auth",
+        "event_type": "auth_login",
+        "user_id": "u1",
+        "action": "login",
+        "decision": "success",
+        "context": {"ip": "1.2.3.4"},
+    })
+    event = parse_audit_event(raw)
+
+    assert isinstance(event, AuditEvent)
+    assert event.event_id == "evt-1"
+    assert event.service == "auth"
+    assert event.context == {"ip": "1.2.3.4"}
 
 
-def test_sink_write_accepts_any_dict():
-    sink = Sink()
-    sink.write({})
-    sink.write({"nested": {"key": "value"}})
+def test_parse_audit_event_preserves_all_fields():
+    raw = json.dumps({
+        "event_id": "evt-2",
+        "timestamp": "2026-01-01T12:00:00",
+        "service": "policy",
+        "event_type": "policy_decision",
+        "user_id": "u2",
+        "action": "evaluate",
+        "resource": "job_queue",
+        "decision": "deny",
+        "reason": "rbac failed",
+        "trace_id": "trace-xyz",
+        "context": {"env": "prod"},
+    })
+    event = parse_audit_event(raw)
+
+    assert event.resource == "job_queue"
+    assert event.reason == "rbac failed"
+    assert event.trace_id == "trace-xyz"
+    assert isinstance(event.timestamp, datetime)
+
+
+def test_parse_audit_event_raises_on_invalid_json():
+    with pytest.raises(json.JSONDecodeError):
+        parse_audit_event("not-json")
+
+
+def test_parse_audit_event_raises_on_missing_required_fields():
+    raw = json.dumps({"user_id": "u1"})  # missing service/event_type
+    with pytest.raises(Exception):
+        parse_audit_event(raw)

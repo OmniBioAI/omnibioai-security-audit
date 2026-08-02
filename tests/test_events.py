@@ -15,8 +15,8 @@ def test_audit_event_required_fields():
 
 
 def test_audit_event_has_uuid_event_id():
-    # The default is evaluated at class definition time (Pydantic default_factory
-    # is not used here), so event_id is a valid UUID string
+    # Phase 3 PR4.1: event_id is generated per-instance via Field(default_factory=...)
+    # -- see test_models.py for the regression test proving two instances differ.
     event = AuditEvent(service="auth", event_type="test")
     assert isinstance(event.event_id, str)
     assert len(event.event_id) == 36  # UUID4 string: 8-4-4-4-12 format

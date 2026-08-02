@@ -3,7 +3,7 @@ import asyncio
 from audit.logger import AuditLogger
 from audit.models import AuditEvent
 from audit.config import AuditConfig
-from audit.context import get_trace_id, get_user_id
+from audit.context import get_trace_id, get_user_id, get_identity
 
 logger = AuditLogger()
 
@@ -14,6 +14,13 @@ def audit(event_type: str, action: str):
         async def async_inner(*args, **kwargs):
             result = await func(*args, **kwargs)
 
+            # PR4.4: identity is None unless inject_context() was given a
+            # token that validated (audit/contexts.py), so this is `{}`
+            # for every caller that predates PR4.4 -- identical to the
+            # implicit AuditEvent.context default that was already in
+            # effect here.
+            identity = get_identity()
+
             await logger.log(
                 AuditEvent(
                     service=AuditConfig.SERVICE_NAME,
@@ -22,6 +29,7 @@ def audit(event_type: str, action: str):
                     action=action,
                     decision="success",
                     trace_id=get_trace_id(),
+                    context=identity.as_context() if identity else {},
                 )
             )
 

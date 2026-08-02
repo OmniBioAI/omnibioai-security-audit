@@ -1,15 +1,20 @@
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
-from audit.context import trace_id_var, user_id_var
+from audit.context import trace_id_var, user_id_var, identity_var
 
 
 @pytest.fixture(autouse=True)
 def reset_context_vars():
     t1 = trace_id_var.set("test-trace")
     t2 = user_id_var.set("test-user")
+    # PR4.4, additive: keeps identity_var at its None default for every
+    # existing test in this file (none of them set it), and resets it for
+    # any test below that does.
+    t3 = identity_var.set(None)
     yield
     trace_id_var.reset(t1)
     user_id_var.reset(t2)
+    identity_var.reset(t3)
 
 
 # ---------------------------------------------------------------------------
@@ -156,3 +161,86 @@ async def test_audit_decorator_passes_args_to_wrapped():
 
     assert result == 3
     assert captured == [(1, 2)]
+
+
+# ---------------------------------------------------------------------------
+# PR4.4: identity enrichment via audit/context.py::identity_var
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_audit_decorator_context_empty_without_identity():
+    """Every pre-PR4.4 caller (identity_var left at its None default, as
+    the reset_context_vars fixture does) must still get context == {} --
+    the exact default AuditEvent already had before this PR."""
+    mock_logger = MagicMock()
+    mock_logger.log = AsyncMock()
+
+    with patch("audit.decorators.logger", mock_logger):
+        from audit.decorators import audit
+
+        @audit(event_type="auth", action="login")
+        async def my_func():
+            return True
+
+        await my_func()
+
+    event = mock_logger.log.call_args[0][0]
+    assert event.context == {}
+
+
+@pytest.mark.asyncio
+async def test_audit_decorator_enriches_context_with_verified_identity():
+    from audit.identity import VerifiedIdentity
+
+    identity = VerifiedIdentity(
+        sub="42", email="alice@omnibioai.test", roles=["org_admin"],
+        org_id=7, org_role=["admin"],
+    )
+    token = identity_var.set(identity)
+
+    mock_logger = MagicMock()
+    mock_logger.log = AsyncMock()
+
+    try:
+        with patch("audit.decorators.logger", mock_logger):
+            from audit.decorators import audit
+
+            @audit(event_type="auth", action="login")
+            async def my_func():
+                return True
+
+            await my_func()
+    finally:
+        identity_var.reset(token)
+
+    event = mock_logger.log.call_args[0][0]
+    assert event.context == {
+        "identity": {
+            "sub": "42",
+            "email": "alice@omnibioai.test",
+            "roles": ["org_admin"],
+            "org_id": 7,
+            "org_role": ["admin"],
+            "verified": True,
+        }
+    }
+
+
+@pytest.mark.asyncio
+async def test_audit_decorator_user_id_unaffected_by_identity_absence():
+    """Sanity check that this PR didn't change how user_id itself is
+    sourced -- still get_user_id(), untouched by identity_var."""
+    mock_logger = MagicMock()
+    mock_logger.log = AsyncMock()
+
+    with patch("audit.decorators.logger", mock_logger):
+        from audit.decorators import audit
+
+        @audit(event_type="auth", action="login")
+        async def my_func():
+            return True
+
+        await my_func()
+
+    event = mock_logger.log.call_args[0][0]
+    assert event.user_id == "test-user"

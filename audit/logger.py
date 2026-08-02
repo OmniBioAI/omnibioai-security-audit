@@ -10,9 +10,12 @@ class AuditLogger:
         self.redis = redis.from_url(AuditConfig.REDIS_URL, decode_responses=True)
 
     async def log(self, event: AuditEvent):
-        payload = event.dict()
-
         try:
+            # mode="json" recursively converts non-JSON-native types (e.g. the
+            # datetime timestamp) to their JSON-safe form (ISO-8601 string),
+            # so json.dumps below never sees a raw datetime.
+            payload = event.model_dump(mode="json")
+
             await self.redis.xadd(
                 AuditConfig.STREAM_NAME,
                 {"data": json.dumps(payload)},
