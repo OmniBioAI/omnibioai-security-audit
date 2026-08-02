@@ -42,6 +42,79 @@ Stream Consumers   Future Sink Layer
 
 ---
 
+## Authentication
+
+This service produces audit events; it does not authenticate end users
+itself. It has two touchpoints with the ecosystem's JWT identity layer,
+both delegating verification to a local copy of the same shared logic
+`omnibioai-control-center` uses (`audit/jwt_verify.py`, structurally
+identical to that repo's `core/jwt_verify.py` — see
+[omnibioai-auth's README](../omnibioai-auth#jwt) for the token model both
+verify against).
+
+### Platform admin authentication
+
+`api/deps.py::require_platform_admin` gates this service's own read APIs
+(audit query/search endpoints). It parses the `Authorization` header,
+delegates full verification to `jwt_verify.verify_token`, and then makes
+its own authorization decision: 401 if the token itself is invalid, 403
+if it's valid but lacks the `platform_admin` role. Audit records are
+platform-admin only — never exposed to organization admins — since they
+contain security-sensitive activity across the whole platform, not scoped
+to any one org. Unlike `omnibioai-auth`, this service has no database
+access to resolve a *permission* from a role name, so it checks for the
+literal seeded `platform_admin` role, the same pattern
+`omnibioai-control-center`'s `require_admin` uses for `admin`.
+
+A second, non-HTTP touchpoint exists for audit producers running
+in-process rather than behind a FastAPI request: `audit/identity.py::validate_identity_token`
+verifies a caller-supplied access token (also via `jwt_verify.verify_token`)
+before attributing an audit event to that identity — never raises, a
+verification failure just means the event is logged without a verified
+identity rather than blocking the caller's request. This is what stops an
+in-process caller from attributing an audit event to an arbitrary,
+unverified `user_id` string.
+
+### Shared JWT verification
+
+`audit/jwt_verify.py::verify_token` is the single place in this repo that
+fully verifies a token — signature, expiry, token type (rejects a
+presented refresh token), the required `sub` claim, and Redis
+jti-blacklist revocation. Both `require_platform_admin` and
+`validate_identity_token` delegate to it rather than each doing their own
+partial decode, which is exactly the gap this module closed (see the
+module's own docstring for the history).
+
+### Redis blacklist
+
+The same jti-blacklist `omnibioai-auth` writes to on logout
+(`blacklist:jti:{jti}`) is checked here directly against the same Redis
+instance (`AuditConfig.REDIS_URL`) — **fail-open** on a Redis error,
+deliberately matching auth-service's own documented tradeoff: a Redis
+blip must not 401 every platform-admin request in this service either.
+
+### HS256 compatibility
+
+HS256 — the production default everywhere in the ecosystem today — is
+fully supported and unaffected by RS256 readiness below: an HS256 token's
+own `alg` header routes it straight to the existing shared-secret
+verification path, exactly as before.
+
+### RS256 compatibility
+
+`jwt_verify.py` also verifies RS256 tokens against `omnibioai-auth`'s
+`GET /.well-known/jwks.json`, dispatched by each token's own `alg` header
+rather than by local configuration — so this service is ready to verify
+RS256 tokens the moment `omnibioai-auth` is switched to issue them,
+without a corresponding deploy here. The JWKS client is a cached,
+auto-refreshing lookup by `kid` (refreshes once on an unknown `kid`, e.g.
+after key rotation); any signature or JWKS-fetch failure fails closed —
+there is no path that accepts a token without a verified signature. No
+production deployment has switched issuance to RS256 yet — see the
+[ecosystem root README](../omnibioai#deployment-notes)'s Deployment Notes.
+
+---
+
 ## Key Features
 
 ### 🚀 High Performance
