@@ -36,9 +36,19 @@ Services (Auth / IAM / Policy / TES)
             │
     ┌───────┴────────┐
     ▼                ▼
-Stream Consumers   Future Sink Layer
-(processors)       (DB / S3 / OpenSearch)
+Stream Consumers   Sink Layer (implemented today)
+(processors)       worker/main.py + consumers/sink.py write into a
+                    MySQL-backed store (db/models.py, Alembic-migrated)
+                    │
+                    ▼
+              GET /audit/events — platform-admin-gated query API
+              (see "API Endpoints" below)
 ```
+
+A DB sink and a queryable read API already exist — "Future Sink Layer"
+in earlier revisions of this diagram undersold what's shipped; the
+Roadmap's remaining "OpenSearch / additional sink backends" item is
+about backends *beyond* MySQL, not the first one.
 
 ---
 
@@ -178,6 +188,18 @@ curl http://localhost:8004/health
 # {"status": "ok"}
 ```
 
+### API Endpoints
+
+| Endpoint | Method | Auth | Description |
+|----------|--------|------|-------------|
+| `/health` | GET | — | Health check |
+| `/audit/test` | GET | none today | Write-side ingestion smoke test |
+| `/audit/events` | GET | `platform_admin` role | Query audit events — `page`/`page_size`, plus optional `user_id`/`service`/`event_type`/`decision`/`from_timestamp`/`to_timestamp` filters |
+
+`/audit/events` is deliberately a separate router from `/audit/test` —
+the former is the platform-admin-gated read API (see "Platform admin
+authentication" above), the latter has no auth at all today.
+
 ### Environment variables
 
 | Variable | Default | Description |
@@ -186,6 +208,9 @@ curl http://localhost:8004/health
 | `AUDIT_STREAM` | `audit:events` | Stream name |
 | `SERVICE_NAME` | `omnibioai-security-audit` | Service identifier |
 | `AUDIT_MAXLEN` | `1000000` | Max stream length |
+| `AUDIT_DATABASE_URL` | `mysql+pymysql://root:root@localhost:3306/omnibioai_audit` | Durable audit-event store the consumer writes into and `/audit/events` queries |
+| `AUDIT_CONSUMER_GROUP` | `audit-workers` | Redis Streams consumer group name |
+| `AUDIT_CONSUMER_NAME` | `worker-{pid}` | Per-process consumer identity within the group |
 
 ---
 
@@ -321,7 +346,8 @@ This service integrates with:
 | Fail-open design | ✓ Stable |
 | Distributed trace ID support | ✓ Stable |
 | 99% test coverage | ✓ Stable |
-| OpenSearch / PostgreSQL sink | Planned |
+| MySQL sink + queryable read API (`worker/`, `db/`, `/audit/events`) | ✓ Stable |
+| OpenSearch / additional sink backends | Planned |
 | Real-time security dashboard | Planned |
 | AI-based anomaly detection | Planned v0.5 |
 | Compliance reporting engine | Planned v0.5 |
