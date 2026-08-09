@@ -134,3 +134,96 @@ def test_run_stops_after_max_iterations():
         worker.run(max_iterations=3)
 
     assert mock_reader.read_group.call_count == 3
+
+
+# ---------------------------------------------------------------------------
+# run() -- PR-B0 follow-up: read_group() timeout/error handling
+#
+# Regression coverage for the crash loop found during PR-B0 runtime
+# validation: run() previously had no exception handling around the
+# blocking reader.read_group() call itself (only handle_message() did).
+# redis-py's own socket-level read timeout can fire once an idle stream
+# leaves the blocking XREADGROUP call sitting at its `block` (5000ms)
+# boundary with nothing new to deliver -- expected, not a failure -- and
+# that uncaught redis.exceptions.TimeoutError crashed the whole worker
+# process every ~5s, with Docker's restart: on-failure just repeating the
+# identical crash forever.
+# ---------------------------------------------------------------------------
+
+def test_run_continues_after_read_group_timeout():
+    """The exact failure mode: a real redis.exceptions.TimeoutError from
+    read_group() (not a generic Exception) must not terminate run() --
+    it's treated as an empty read and the loop continues to the next
+    iteration, proven here by reaching all 3 requested iterations."""
+    from redis.exceptions import TimeoutError as RedisTimeoutError
+
+    mock_reader = MagicMock()
+    mock_reader.read_group.side_effect = RedisTimeoutError("Timeout reading from socket")
+
+    with patch("worker.main.StreamReader", return_value=mock_reader):
+        worker.run(max_iterations=3)  # must not raise
+
+    assert mock_reader.read_group.call_count == 3
+
+
+def test_run_processes_a_message_after_a_timeout():
+    """A read timeout on one iteration must not prevent a real message
+    from being processed -- and still acked via handle_message()'s
+    existing, unmodified behavior -- on the next iteration."""
+    from redis.exceptions import TimeoutError as RedisTimeoutError
+
+    mock_reader = MagicMock()
+    mock_reader.read_group.side_effect = [
+        RedisTimeoutError("Timeout reading from socket"),
+        [(worker.AuditConfig.STREAM_NAME, [("1-0", {"data": _raw("evt-after-timeout")})])],
+    ]
+
+    with patch("worker.main.StreamReader", return_value=mock_reader), \
+         patch("worker.main.handle_message") as mock_handle:
+        worker.run(max_iterations=2)
+
+    mock_handle.assert_called_once_with(
+        mock_reader, "1-0", {"data": _raw("evt-after-timeout")}
+    )
+
+
+def test_run_logs_but_survives_unexpected_read_group_exception(capsys):
+    """A non-timeout Redis exception (e.g. a real connection drop) must
+    also not crash the worker -- but unlike the expected-timeout case,
+    it must be printed, matching the existing print-and-continue
+    convention used by handle_message()/audit/logger.py, not silently
+    swallowed."""
+    from redis.exceptions import ConnectionError as RedisConnectionError
+
+    mock_reader = MagicMock()
+    mock_reader.read_group.side_effect = [
+        RedisConnectionError("connection reset by peer"),
+        [],
+    ]
+
+    with patch("worker.main.StreamReader", return_value=mock_reader):
+        worker.run(max_iterations=2)  # must not raise
+
+    captured = capsys.readouterr()
+    assert "read_group failed" in captured.out
+    assert "connection reset by peer" in captured.out
+
+
+def test_run_does_not_swallow_keyboard_interrupt():
+    """Clean shutdown must keep working: KeyboardInterrupt (Ctrl+C /
+    SIGINT, per the __main__ block's own except KeyboardInterrupt:
+    sys.exit(0)) is a BaseException, not an Exception, so the new
+    `except Exception` added around read_group() must not catch it --
+    it has to keep propagating out of run() exactly as before this
+    fix."""
+    mock_reader = MagicMock()
+    mock_reader.read_group.side_effect = KeyboardInterrupt()
+
+    with patch("worker.main.StreamReader", return_value=mock_reader):
+        raised = False
+        try:
+            worker.run()
+        except KeyboardInterrupt:
+            raised = True
+
+    assert raised is True
