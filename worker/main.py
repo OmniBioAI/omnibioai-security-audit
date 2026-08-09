@@ -9,6 +9,8 @@ never depend on a database write happening on the ingestion side.
 """
 import sys
 
+from redis.exceptions import TimeoutError as RedisTimeoutError
+
 from audit.config import AuditConfig
 from consumers.processor import parse_audit_event
 from consumers.sink import Sink
@@ -54,7 +56,28 @@ def run(max_iterations=None):
 
     iterations = 0
     while max_iterations is None or iterations < max_iterations:
-        response = reader.read_group(AuditConfig.CONSUMER_NAME)
+        try:
+            response = reader.read_group(AuditConfig.CONSUMER_NAME)
+        except RedisTimeoutError:
+            # Expected on an idle stream: read_group() blocks for up to
+            # `block` ms (default 5000, see StreamReader.read_group) and
+            # redis-py's own socket-level read timeout can fire right at
+            # that boundary even though the server side simply had
+            # nothing new to deliver -- functionally identical to an
+            # empty response, not a failure. Previously uncaught, this
+            # crashed the process every ~5s once the stream went idle,
+            # and Docker's restart: on-failure just repeated the same
+            # crash forever (PR-B0 follow-up). No print here: this is
+            # normal idle-stream behavior, not an error to alarm on.
+            response = []
+        except Exception as e:
+            # A genuine unexpected Redis/connection failure. Same
+            # print-and-continue convention as handle_message()/
+            # audit/logger.py above: never let a transient infra blip
+            # kill the whole worker process, but keep it visible instead
+            # of silently swallowed.
+            print(f"[WORKER] read_group failed, will retry: {e}")
+            response = []
         for _stream_name, messages in response:
             for message_id, fields in messages:
                 handle_message(reader, message_id, fields)
