@@ -171,3 +171,41 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # Worker image (Dockerfile.worker) -- same trigger, same commit, same
+      # login already established above, same tag scheme as the API image.
+      # A dedicated second metadata+build-push step pair (not a separate
+      # job) so both images are guaranteed to come from the exact same
+      # checkout, and a failure building one doesn't leave the other only
+      # partially reasoned-about in a differently-gated job.
+      #
+      # Package-access note: unlike the API image's package (which already
+      # existed, unlinked, and needed an explicit "Manage Actions access"
+      # grant before this repo's GITHUB_TOKEN could push to it -- see PR
+      # #6/Phase 5 history), ghcr.io/omnibioai/omnibioai-security-audit-worker
+      # does not exist yet at all. Whether GHCR auto-creates and auto-links
+      # a brand-new org package to this repo on first successful push, the
+      # same way it did for ghcr.io/omnibioai/omnibioai-web on
+      # omnibioai-studio's first build-web.yml run, or requires the same
+      # kind of separate manual grant, is governed by an org-level package-
+      # creation policy setting this workflow can't see or affect --
+      # unverified until a real push is attempted.
+      - name: Extract worker image metadata
+        id: meta-worker
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/omnibioai-security-audit-worker
+          tags: |
+            type=semver,pattern={{version}}
+            type=raw,value=latest
+
+      - name: Build and push worker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: Dockerfile.worker
+          push: true
+          tags: ${{ steps.meta-worker.outputs.tags }}
+          labels: ${{ steps.meta-worker.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
