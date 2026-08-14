@@ -1,6 +1,7 @@
 import json
+
 import redis.asyncio as redis
-from typing import Optional
+
 from audit.config import AuditConfig
 from audit.models import AuditEvent
 from audit.signing import sign_audit_event
@@ -41,6 +42,6 @@ class AuditLogger:
                 maxlen=AuditConfig.MAX_STREAM_LENGTH,
                 approximate=True,
             )
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 -- intentional fire-and-forget: audit logging must NEVER break core system
             # NEVER break core system
             print(f"[AUDIT ERROR] {e}")
