@@ -75,3 +75,43 @@ def test_sink_write_handles_optional_fields_missing(db_session):
     fetched = db_session.get(AuditEventRecord, "evt-minimal")
     assert fetched.user_id is None
     assert fetched.context == {}
+
+
+# ---------------------------------------------------------------------------
+# PR2: integrity_status -- additive, existing callers above are unaffected
+# and unmodified (none of them pass this key).
+# ---------------------------------------------------------------------------
+
+def test_sink_write_persists_explicit_valid_status(db_session):
+    sink = Sink(db_session)
+    sink.write(_event(integrity_status="valid"))
+
+    fetched = db_session.get(AuditEventRecord, "evt-1")
+    assert fetched.integrity_status == "valid"
+
+
+def test_sink_write_persists_explicit_invalid_status(db_session):
+    sink = Sink(db_session)
+    sink.write(_event(integrity_status="invalid"))
+
+    fetched = db_session.get(AuditEventRecord, "evt-1")
+    assert fetched.integrity_status == "invalid"
+
+
+def test_sink_write_persists_explicit_unsigned_status(db_session):
+    sink = Sink(db_session)
+    sink.write(_event(integrity_status="unsigned"))
+
+    fetched = db_session.get(AuditEventRecord, "evt-1")
+    assert fetched.integrity_status == "unsigned"
+
+
+def test_sink_write_omitted_status_defaults_to_unsigned(db_session):
+    """No existing caller (this file's own earlier tests, worker/main.py
+    before PR2, test_producer_contract_reconciliation.py) passes this key
+    -- must default safely rather than KeyError or persist None."""
+    sink = Sink(db_session)
+    sink.write(_event())  # no integrity_status key at all
+
+    fetched = db_session.get(AuditEventRecord, "evt-1")
+    assert fetched.integrity_status == "unsigned"

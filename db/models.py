@@ -28,4 +28,12 @@ class AuditEventRecord(Base):
     reason = Column(Text, nullable=True)
     trace_id = Column(String(255), nullable=True)
     context = Column(JSON, nullable=False, default=dict)
+    # PR2 of the audit:events integrity remediation: one of "valid" /
+    # "invalid" / "unsigned", set by the worker (consumers/processor.py::
+    # classify_event_integrity) at ingest time -- never supplied by a
+    # producer. server_default="unsigned" back-fills every pre-existing
+    # row on migration with no manual UPDATE, and matches what an event
+    # missing a signature already classifies as going forward, so old and
+    # new "no signature" rows read identically.
+    integrity_status = Column(String(16), nullable=False, server_default="unsigned")
     created_at = Column(DateTime, server_default=func.now(), nullable=False)

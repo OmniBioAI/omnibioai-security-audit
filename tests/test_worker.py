@@ -1,10 +1,15 @@
 """PR4.2 regression tests: worker/main.py -- the Redis Streams consumer-group
 loop that reads audit:events, parses/persists each message, and only ACKs
-after a successful DB write."""
+after a successful DB write.
+
+PR2 additions (bottom of file): integrity_status classification -- signed
+valid/invalid events and unsigned (today's only real traffic shape) all
+persist and ACK; only "invalid" gets the distinct observability print."""
 import json
 from unittest.mock import MagicMock, patch
 
 import worker.main as worker
+from audit.signing import sign_audit_event
 
 
 def _raw(event_id="evt-1"):
@@ -227,3 +232,149 @@ def test_run_does_not_swallow_keyboard_interrupt():
             raised = True
 
     assert raised is True
+
+
+# ---------------------------------------------------------------------------
+# PR2: integrity_status classification (consumers/processor.py::
+# classify_event_integrity), wired into handle_message()
+# ---------------------------------------------------------------------------
+
+SECRET = "synthetic-worker-test-secret"
+
+
+def _handle_with_status(fields, secret=SECRET):
+    """Runs handle_message() with EVENT_SIGNING_SECRET fixed to a known
+    synthetic value and SessionLocal/Sink mocked, returning
+    (handle_result, integrity_status_written_to_sink)."""
+    reader = MagicMock()
+    mock_sink_instance = MagicMock()
+    mock_sink_instance.write.return_value = True
+
+    with patch("worker.main.SessionLocal") as mock_session_local, \
+         patch("worker.main.Sink", return_value=mock_sink_instance), \
+         patch.object(worker.AuditConfig, "EVENT_SIGNING_SECRET", secret):
+        mock_session_local.return_value = MagicMock()
+        result = worker.handle_message(reader, "1-0", fields)
+
+    written = mock_sink_instance.write.call_args[0][0] if mock_sink_instance.write.called else None
+    status = written["integrity_status"] if written else None
+    return result, status, reader
+
+
+def test_valid_signed_event_persists_as_valid_and_acks():
+    raw = _raw(event_id="evt-valid")
+    sig = sign_audit_event("auth", raw, SECRET)
+
+    result, status, reader = _handle_with_status({"data": raw, "sig": sig})
+
+    assert result is True
+    assert status == "valid"
+    reader.ack.assert_called_once_with("1-0")
+
+
+def test_unsigned_event_persists_as_unsigned_and_acks():
+    """Today's only real traffic shape -- no sig field at all."""
+    raw = _raw(event_id="evt-unsigned")
+
+    result, status, reader = _handle_with_status({"data": raw})
+
+    assert result is True
+    assert status == "unsigned"
+    reader.ack.assert_called_once_with("1-0")
+
+
+def test_invalid_signature_persists_as_invalid_and_acks():
+    raw = _raw(event_id="evt-invalid")
+    sig = sign_audit_event("auth", raw, "a-different-secret-entirely")
+
+    result, status, reader = _handle_with_status({"data": raw, "sig": sig})
+
+    assert result is True
+    assert status == "invalid"
+    reader.ack.assert_called_once_with("1-0")
+
+
+def test_malformed_signature_persists_as_invalid_and_acks():
+    raw = _raw(event_id="evt-malformed-sig")
+
+    result, status, reader = _handle_with_status({"data": raw, "sig": "not-a-real-signature"})
+
+    assert result is True
+    assert status == "invalid"
+    reader.ack.assert_called_once_with("1-0")
+
+
+def test_invalid_signature_emits_distinct_observability_message(capsys):
+    raw = _raw(event_id="evt-loud-invalid")
+    sig = sign_audit_event("auth", raw, "wrong-secret")
+
+    _handle_with_status({"data": raw, "sig": sig})
+
+    captured = capsys.readouterr()
+    assert "SIGNATURE INVALID" in captured.out
+    assert "evt-loud-invalid" in captured.out
+
+
+def test_valid_signature_does_not_emit_the_invalid_message(capsys):
+    raw = _raw(event_id="evt-quiet-valid")
+    sig = sign_audit_event("auth", raw, SECRET)
+
+    _handle_with_status({"data": raw, "sig": sig})
+
+    captured = capsys.readouterr()
+    assert "SIGNATURE INVALID" not in captured.out
+
+
+def test_unsigned_event_does_not_emit_the_invalid_message(capsys):
+    raw = _raw(event_id="evt-quiet-unsigned")
+
+    _handle_with_status({"data": raw})
+
+    captured = capsys.readouterr()
+    assert "SIGNATURE INVALID" not in captured.out
+
+
+def test_invalid_signature_message_does_not_print_the_secret_or_signature():
+    """Security check: the observability print must never leak the secret
+    or the signature/data payload -- only identifying metadata."""
+    raw = _raw(event_id="evt-secret-check")
+    sig = sign_audit_event("auth", raw, "wrong-secret")
+
+    import io
+    from contextlib import redirect_stdout
+
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        _handle_with_status({"data": raw, "sig": sig})
+
+    output = buf.getvalue()
+    assert SECRET not in output
+    assert "wrong-secret" not in output
+    assert sig not in output
+
+
+def test_malformed_json_still_does_not_ack_unchanged_behavior():
+    """Parse/schema failures remain retriable -- integrity classification
+    must never run on data that failed to parse at all."""
+    result, status, reader = _handle_with_status({"data": "not-json"})
+
+    assert result is False
+    assert status is None
+    reader.ack.assert_not_called()
+
+
+def test_db_failure_still_does_not_ack_unchanged_behavior():
+    reader = MagicMock()
+    mock_sink_instance = MagicMock()
+    mock_sink_instance.write.side_effect = Exception("db connection lost")
+    raw = _raw(event_id="evt-db-fail")
+
+    with patch("worker.main.SessionLocal") as mock_session_local, \
+         patch("worker.main.Sink", return_value=mock_sink_instance), \
+         patch.object(worker.AuditConfig, "EVENT_SIGNING_SECRET", SECRET):
+        mock_db = MagicMock()
+        mock_session_local.return_value = mock_db
+        result = worker.handle_message(reader, "1-0", {"data": raw})
+
+    assert result is False
+    reader.ack.assert_not_called()

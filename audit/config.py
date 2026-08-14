@@ -18,3 +18,17 @@ class AuditConfig:
     )
     CONSUMER_GROUP = os.getenv("AUDIT_CONSUMER_GROUP", "audit-workers")
     CONSUMER_NAME = os.getenv("AUDIT_CONSUMER_NAME", f"worker-{os.getpid()}")
+
+    # PR2 of the audit:events integrity remediation (see audit/signing.py,
+    # PR1): reuses the same JWT_SECRET every other platform service (and
+    # this repo's own audit/jwt_verify.py) already reads -- not a new
+    # secret, not a new convention. Falls back to "change-me" the same way
+    # jwt_verify.JWT_SECRET does; a deployment that never set the real
+    # JWT_SECRET already has a forgeable HS256 token secret, so this adds
+    # no new exposure. See PR2's own report: the dev-compose worker
+    # container currently has JWT_SECRET unset entirely (falls back here
+    # too) -- until that's fixed, this worker cannot correctly verify a
+    # signature made with the platform's real secret. Harmless today since
+    # no producer signs yet (every event classifies as "unsigned"), but
+    # this default must not be trusted once a producer starts signing.
+    EVENT_SIGNING_SECRET = os.getenv("JWT_SECRET", "change-me")

@@ -20,6 +20,7 @@ where real backends exist, not a hard CI requirement introduced by this
 PR -- see the B0 report for why that's a deliberate, separately-flagged
 follow-up rather than bundled into this change.
 """
+import json
 import os
 import uuid
 
@@ -185,6 +186,124 @@ def test_real_produce_consume_persist_ack_round_trip(real_redis_stream, real_mys
     # left for retry.
     pending = real_redis_stream.redis.xpending(TEST_STREAM, "audit-workers")
     assert pending["pending"] == 0
+
+
+def _integration_payload(event_id, service="b0-integration-test", **overrides):
+    from datetime import datetime, timezone
+
+    payload = {
+        "event_id": event_id,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "service": service,
+        "event_type": "test",
+        "user_id": "test-user",
+        "action": "pr2_integration_smoke",
+        "resource": None,
+        "decision": "success",
+        "reason": None,
+        "trace_id": "pr2-trace-1",
+        "context": {},
+    }
+    payload.update(overrides)
+    return payload
+
+
+def _run_real_round_trip(real_redis_stream, real_mysql_url, monkeypatch, event_id, build_fields):
+    """Shared plumbing for the three PR2 integration tests below --
+    identical chain to test_real_produce_consume_persist_ack_round_trip
+    above (real XADD -> real consumer-group read -> worker.handle_message
+    -> real MySQL -> XACK).
+
+    `build_fields(raw_data) -> dict` decides the extra Redis fields (a
+    `sig`, or none) for this specific raw_data string -- taking a callback
+    rather than a precomputed `sig` guarantees any signature is always
+    computed against the exact bytes that get XADDed, not a separately
+    (and therefore mismatched) constructed copy.
+    """
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    import worker.main as worker_module
+
+    engine = create_engine(real_mysql_url)
+    TestSessionLocal = sessionmaker(bind=engine)
+    monkeypatch.setattr(worker_module, "SessionLocal", TestSessionLocal)
+
+    raw_data = json.dumps(_integration_payload(event_id))
+    fields = {"data": raw_data, **build_fields(raw_data)}
+    real_redis_stream.redis.xadd(TEST_STREAM, fields)
+
+    response = real_redis_stream.read_group(consumer_name="pr2-test-consumer", block=3000)
+    assert response, "expected the real event just XADDed to be delivered"
+
+    acked = False
+    for _stream_name, messages in response:
+        for message_id, delivered_fields in messages:
+            result = worker_module.handle_message(real_redis_stream, message_id, delivered_fields)
+            assert result is True
+            acked = True
+    assert acked
+
+    with TestSessionLocal() as session:
+        from db.models import AuditEventRecord
+
+        row = session.get(AuditEventRecord, event_id)
+        assert row is not None
+        return row
+
+
+# ---------------------------------------------------------------------------
+# PR2: integrity_status through the real Redis -> worker -> MySQL chain.
+#
+# Signs with whatever AuditConfig.EVENT_SIGNING_SECRET actually resolves to
+# in *this* process/environment -- worker.main.handle_message() (called
+# inside _run_real_round_trip, same process) reads the same AuditConfig,
+# so this is correct regardless of whether this environment has the real
+# platform JWT_SECRET set or is falling back to "change-me". Never assumes
+# which -- that is the entire point of reading it at test time rather than
+# hard-coding a value.
+# ---------------------------------------------------------------------------
+
+def test_real_valid_signed_event_persists_as_valid(real_redis_stream, real_mysql_url, monkeypatch):
+    from audit.config import AuditConfig
+    from audit.signing import sign_audit_event
+
+    event_id = f"pr2-valid-{uuid.uuid4()}"
+    row = _run_real_round_trip(
+        real_redis_stream, real_mysql_url, monkeypatch,
+        event_id=event_id,
+        build_fields=lambda raw_data: {
+            "sig": sign_audit_event("b0-integration-test", raw_data, AuditConfig.EVENT_SIGNING_SECRET)
+        },
+    )
+    assert row.integrity_status == "valid"
+
+
+def test_real_unsigned_event_persists_as_unsigned(real_redis_stream, real_mysql_url, monkeypatch):
+    event_id = f"pr2-unsigned-{uuid.uuid4()}"
+    row = _run_real_round_trip(
+        real_redis_stream, real_mysql_url, monkeypatch,
+        event_id=event_id,
+        build_fields=lambda raw_data: {},  # no sig field -- today's actual production traffic shape
+    )
+    assert row.integrity_status == "unsigned"
+
+
+def test_real_invalid_signed_event_persists_as_invalid(real_redis_stream, real_mysql_url, monkeypatch):
+    from audit.config import AuditConfig
+    from audit.signing import sign_audit_event
+
+    event_id = f"pr2-invalid-{uuid.uuid4()}"
+    row = _run_real_round_trip(
+        real_redis_stream, real_mysql_url, monkeypatch,
+        event_id=event_id,
+        # Well-formed v1 signature, correct secret, WRONG service -- signed
+        # for a different producer identity than the event actually claims.
+        build_fields=lambda raw_data: {
+            "sig": sign_audit_event("some-other-service", raw_data, AuditConfig.EVENT_SIGNING_SECRET)
+        },
+    )
+    assert row.integrity_status == "invalid"
 
 
 def test_real_duplicate_delivery_does_not_duplicate_row(real_mysql_url):
