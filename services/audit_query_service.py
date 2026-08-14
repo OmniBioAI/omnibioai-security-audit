@@ -16,6 +16,7 @@ def list_audit_events(
     decision: Optional[str] = None,
     from_timestamp: Optional[datetime] = None,
     to_timestamp: Optional[datetime] = None,
+    integrity_status: Optional[str] = None,
 ) -> tuple[list[AuditEventRecord], int]:
     """Returns (page of AuditEventRecord rows, total matching rows).
 
@@ -42,6 +43,8 @@ def list_audit_events(
         query = query.filter(AuditEventRecord.timestamp >= from_timestamp)
     if to_timestamp is not None:
         query = query.filter(AuditEventRecord.timestamp <= to_timestamp)
+    if integrity_status is not None:
+        query = query.filter(AuditEventRecord.integrity_status == integrity_status)
 
     total = query.count()
 

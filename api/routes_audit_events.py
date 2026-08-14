@@ -26,6 +26,14 @@ def list_audit_events(
     decision: Optional[str] = Query(None),
     from_timestamp: Optional[datetime] = Query(None),
     to_timestamp: Optional[datetime] = Query(None),
+    # HIPAA audit-integrity rollout: lets a platform_admin ask "show me
+    # every event that failed signature verification" (integrity_status=
+    # invalid) or isolate the still-unsigned backlog -- not just see the
+    # field per-row. No validation beyond Optional[str]: the DB column
+    # itself is the source of truth for what values exist ("valid"/
+    # "invalid"/"unsigned" today, see audit/config.py's classifier), and
+    # an unrecognized value here just filters to zero rows, not an error.
+    integrity_status: Optional[str] = Query(None),
     db: Session = Depends(get_db),
     _admin: dict = Depends(require_platform_admin),
 ) -> AuditEventListResponse:
@@ -39,6 +47,7 @@ def list_audit_events(
         decision=decision,
         from_timestamp=from_timestamp,
         to_timestamp=to_timestamp,
+        integrity_status=integrity_status,
     )
     total_pages = (total + page_size - 1) // page_size if total else 0
     return AuditEventListResponse(

@@ -102,10 +102,15 @@ def test_response_contains_expected_fields(audit_events_client):
     assert set(item.keys()) == {
         "event_id", "timestamp", "service", "event_type", "user_id",
         "action", "resource", "decision", "reason", "trace_id", "context",
-        "created_at",
+        "created_at", "integrity_status",
     }
     assert item["event_id"] == "evt-0"
     assert item["context"] == {"i": 0}
+    # _seed() rows are constructed without an explicit integrity_status --
+    # the DB column's own server_default="unsigned" (0002_integrity_status)
+    # applies, same as every real historical event before any producer
+    # signed.
+    assert item["integrity_status"] == "unsigned"
 
 
 def test_pagination_works(audit_events_client):
@@ -197,6 +202,30 @@ def test_filter_by_decision_and_event_type_via_query_params(audit_events_client)
     body = resp.json()
     assert body["total"] == 1
     assert body["items"][0]["event_id"] == "e2"
+
+
+def test_filter_by_integrity_status_via_query_param(audit_events_client):
+    client, sessions = audit_events_client
+    db = sessions()
+    db.add(AuditEventRecord(
+        event_id="e1", timestamp=datetime(2026, 1, 1), service="tes",
+        event_type="workflow_execution_denied", context={}, integrity_status="valid",
+    ))
+    db.add(AuditEventRecord(
+        event_id="e2", timestamp=datetime(2026, 1, 1), service="tes",
+        event_type="workflow_execution_denied", context={}, integrity_status="invalid",
+    ))
+    db.commit()
+    db.close()
+
+    resp = client.get(
+        "/audit/events", headers=_auth_headers(), params={"integrity_status": "invalid"}
+    )
+
+    body = resp.json()
+    assert body["total"] == 1
+    assert body["items"][0]["event_id"] == "e2"
+    assert body["items"][0]["integrity_status"] == "invalid"
 
 
 # ---------------------------------------------------------------------------

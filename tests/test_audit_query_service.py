@@ -21,6 +21,8 @@ def _add(db_session, event_id, minutes_offset=0, **overrides):
         trace_id=overrides.get("trace_id"),
         context=overrides.get("context", {}),
     )
+    if "integrity_status" in overrides:
+        row.integrity_status = overrides["integrity_status"]
     db_session.add(row)
     return row
 
@@ -89,6 +91,31 @@ def test_filters_by_timestamp_range(db_session):
         page_size=20,
         from_timestamp=datetime(2026, 1, 1, 12, 5, 0),
         to_timestamp=datetime(2026, 1, 1, 12, 15, 0),
+    )
+    assert total == 1
+    assert rows[0].event_id == "e2"
+
+
+def test_filters_by_integrity_status(db_session):
+    _add(db_session, "e1", integrity_status="valid")
+    _add(db_session, "e2", integrity_status="invalid")
+    _add(db_session, "e3")  # unspecified -- DB server_default="unsigned" applies
+    db_session.commit()
+
+    rows, total = audit_query_service.list_audit_events(
+        db_session, page=1, page_size=20, integrity_status="invalid"
+    )
+    assert total == 1
+    assert rows[0].event_id == "e2"
+
+
+def test_filters_by_integrity_status_unsigned_matches_the_default(db_session):
+    _add(db_session, "e1", integrity_status="valid")
+    _add(db_session, "e2")
+    db_session.commit()
+
+    rows, total = audit_query_service.list_audit_events(
+        db_session, page=1, page_size=20, integrity_status="unsigned"
     )
     assert total == 1
     assert rows[0].event_id == "e2"
