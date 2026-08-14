@@ -34,6 +34,12 @@ class Sink:
             reason=event.get("reason"),
             trace_id=event.get("trace_id"),
             context=event.get("context", {}),
+            # PR2: additive -- callers that never pass this key (every
+            # existing caller as of this PR) get the same "unsigned"
+            # default the column's own server_default applies at the DB
+            # level, so omitting it is indistinguishable from a genuinely
+            # unsigned event, not an error.
+            integrity_status=event.get("integrity_status", "unsigned"),
         )
         self.db_session.add(record)
         try:

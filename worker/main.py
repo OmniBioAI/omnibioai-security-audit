@@ -12,7 +12,7 @@ import sys
 from redis.exceptions import TimeoutError as RedisTimeoutError
 
 from audit.config import AuditConfig
-from consumers.processor import parse_audit_event
+from consumers.processor import classify_event_integrity, parse_audit_event
 from consumers.sink import Sink
 from consumers.stream_reader import StreamReader
 from db.session import SessionLocal
@@ -21,20 +21,47 @@ from db.session import SessionLocal
 def handle_message(reader: StreamReader, message_id: str, fields: dict) -> bool:
     """Process one Redis Streams message. Returns True if it was acked.
 
-    Deserialize -> validate -> persist -> ack, in that order, and only ack
+    Deserialize -> classify -> persist -> ack, in that order, and only ack
     after a successful DB commit. Any failure along the way leaves the
     message unacknowledged in the consumer group's pending entries list so
     it can be retried -- it is never dropped.
+
+    PR2: classification (valid/invalid/unsigned -- see consumers/
+    processor.py::classify_event_integrity) is deliberately NOT another
+    reason to leave a message unacked. Parse/DB failures above are retried
+    because they may be transient or fixable; a signature is not -- it is
+    either right or wrong forever, so retrying it accomplishes nothing and
+    would only accumulate a permanent poison-pill pending entry. Every
+    classification is persisted (as durable evidence, including forged
+    attempts) and acked, exactly like today's fully-unsigned traffic.
+    Uses fields["data"] itself, not a re-serialization of `event` -- the
+    signature covers the exact transmitted bytes (see audit/signing.py).
     """
+    raw_data = fields["data"]
     try:
-        event = parse_audit_event(fields["data"])
+        event = parse_audit_event(raw_data)
     except Exception as e:
         print(f"[WORKER] failed to parse message {message_id}: {e}")
         return False
 
+    integrity_status = classify_event_integrity(
+        event.service, fields.get("sig"), raw_data, AuditConfig.EVENT_SIGNING_SECRET
+    )
+    if integrity_status == "invalid":
+        # Distinct from the plain print() convention elsewhere in this
+        # file: this is not an infra blip, it's a signature that failed
+        # verification -- worth being loudly, separately visible.
+        print(
+            f"[WORKER] SIGNATURE INVALID for message {message_id} "
+            f"(service={event.service!r}, event_id={event.event_id!r}) -- "
+            f"persisting as durable evidence, not trusting the payload"
+        )
+
     db = SessionLocal()
     try:
-        Sink(db).write(event.model_dump())
+        payload = event.model_dump()
+        payload["integrity_status"] = integrity_status
+        Sink(db).write(payload)
     except Exception as e:
         print(f"[WORKER] failed to persist message {message_id}: {e}")
         return False
