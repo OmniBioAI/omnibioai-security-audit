@@ -14,6 +14,11 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Full history, not the default shallow clone -- `git merge-base`/
+          # `git diff` below need to reach the base commit, which a
+          # depth-1 checkout wouldn't contain.
+          fetch-depth: 0
 
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
@@ -29,10 +34,94 @@ jobs:
           elif [ -f requirements.txt ]; then
             pip install -r requirements.txt
           fi
-          pip install ruff pytest
+          # httpx: required by fastapi.testclient.TestClient (tests/conftest.py,
+          # tests/test_routes_audit.py) -- never a runtime dependency, so it
+          # belongs here, not in requirements.txt (which the Docker image also
+          # installs from). pytest-asyncio: required to actually execute this
+          # repo's existing @pytest.mark.asyncio tests (tests/test_logger.py,
+          # tests/test_decorators.py) -- without it they fail collection/
+          # execution with "async def functions are not natively supported",
+          # not merely warn.
+          pip install ruff pytest httpx pytest-asyncio
 
-      - name: Lint with ruff
-        run: ruff check .
+      # Scoped to Python files actually changed by this push/PR, not
+      # `ruff check .` repo-wide -- this repo carries 107 pre-existing
+      # findings (97 predating the audit:events signing/integrity series,
+      # confirmed by running ruff against pre-PR1 history) that CI has
+      # never once passed against, since before this workflow existed.
+      # Fixing that backlog is real, separate work; gating new commits on
+      # debt they didn't create would keep this job permanently red for
+      # unrelated reasons. Mirrors omnibioai-control-center's own
+      # "ci: scope ruff check to this milestone's own files" fix for the
+      # identical situation -- that one is a hand-written, one-off file
+      # list (not reusable across PRs); this is the general, dynamic
+      # equivalent: compute the changed-file set itself rather than
+      # requiring a human to update a hardcoded list on every PR.
+      #
+      # Base-commit selection:
+      #   pull_request -> merge-base against the PR's own target branch
+      #     (github.base_ref), which is correct even if that branch has
+      #     moved on since the PR diverged -- not just its current HEAD.
+      #   push -> github.event.before, the SHA the branch was at
+      #     immediately prior to this push (correct for both a direct
+      #     push and a merge-commit push from a completed PR).
+      # --diff-filter=ACMR: Added/Copied/Modified/Renamed. Deliberately
+      # excludes Deleted (D) -- a removed file has nothing left to lint,
+      # and `ruff check` on a nonexistent path would just error. A
+      # renamed file is linted at its new path, which is what R already
+      # gives us.
+      # If the base commit can't be determined (e.g. an edge-case trigger
+      # this logic doesn't recognize), this deliberately falls back to
+      # the full, already-known-failing repo-wide check rather than
+      # silently skipping -- erring toward stricter, not looser.
+      #
+      # Tag pushes (github.ref_type == 'tag', e.g. v1.2.3) are handled
+      # before the generic push branch below and deliberately never
+      # consult github.event.before: a *newly created* ref -- which is
+      # what every normal `git push origin vX.Y.Z` is -- always reports
+      # `before` as the all-zero SHA, since there's no prior history on
+      # that ref itself, even though the tagged commit has a perfectly
+      # good parent in the actual commit graph. Falling through to the
+      # generic branch on that all-zero value is exactly what previously
+      # sent every tag push into the unscoped, always-failing
+      # `ruff check .` below -- the one event that must pass for the
+      # Docker job (needs: lint-and-test, gated on refs/tags/v*) to ever
+      # run. HEAD^ -- the tagged commit's own first parent -- is used
+      # instead, so only what changed since that parent is linted. This
+      # needs no extra checkout step: `fetch-depth: 0` above already
+      # fetches full history, so HEAD^ is resolvable for any tag cut from
+      # this repo's normal history. If the tagged commit has no parent
+      # (tagging the repo's very first commit), the --verify --quiet
+      # guard leaves BASE_SHA unset, which still falls back to the
+      # conservative full check below rather than silently skipping.
+      - name: Lint with ruff (changed files only)
+        run: |
+          BASE_SHA=""
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            git fetch --quiet origin "${{ github.base_ref }}"
+            BASE_SHA=$(git merge-base "origin/${{ github.base_ref }}" HEAD)
+          elif [ "${{ github.ref_type }}" = "tag" ]; then
+            if git rev-parse --verify --quiet "HEAD^" > /dev/null; then
+              BASE_SHA=$(git rev-parse "HEAD^")
+            fi
+          elif [ -n "${{ github.event.before }}" ] && [ "${{ github.event.before }}" != "0000000000000000000000000000000000000000" ]; then
+            BASE_SHA="${{ github.event.before }}"
+          fi
+
+          if [ -z "$BASE_SHA" ]; then
+            echo "Could not determine a base commit for this trigger -- falling back to a full repository check."
+            ruff check .
+          else
+            echo "Diffing against base commit: $BASE_SHA"
+            CHANGED_FILES=$(git diff --name-only --diff-filter=ACMR "$BASE_SHA" HEAD -- '*.py')
+            if [ -z "$CHANGED_FILES" ]; then
+              echo "No changed Python files -- nothing to lint."
+            else
+              echo "Linting changed Python files:"
+              echo "$CHANGED_FILES"
+              echo "$CHANGED_FILES" | xargs ruff check
+            fi
+          fi
 
       - name: Run tests
         run: |
