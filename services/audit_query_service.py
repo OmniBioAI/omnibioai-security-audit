@@ -1,5 +1,4 @@
 from datetime import datetime
-from typing import Optional
 
 from sqlalchemy.orm import Session
 
@@ -10,12 +9,13 @@ def list_audit_events(
     db: Session,
     page: int,
     page_size: int,
-    user_id: Optional[str] = None,
-    service: Optional[str] = None,
-    event_type: Optional[str] = None,
-    decision: Optional[str] = None,
-    from_timestamp: Optional[datetime] = None,
-    to_timestamp: Optional[datetime] = None,
+    user_id: str | None = None,
+    service: str | None = None,
+    event_type: str | None = None,
+    decision: str | None = None,
+    from_timestamp: datetime | None = None,
+    to_timestamp: datetime | None = None,
+    integrity_status: str | None = None,
 ) -> tuple[list[AuditEventRecord], int]:
     """Returns (page of AuditEventRecord rows, total matching rows).
 
@@ -42,6 +42,8 @@ def list_audit_events(
         query = query.filter(AuditEventRecord.timestamp >= from_timestamp)
     if to_timestamp is not None:
         query = query.filter(AuditEventRecord.timestamp <= to_timestamp)
+    if integrity_status is not None:
+        query = query.filter(AuditEventRecord.integrity_status == integrity_status)
 
     total = query.count()
 

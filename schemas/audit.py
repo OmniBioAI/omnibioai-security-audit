@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict
 
@@ -15,14 +15,22 @@ class AuditEventOut(BaseModel):
     timestamp: datetime
     service: str
     event_type: str
-    user_id: Optional[str] = None
+    user_id: str | None = None
     action: str
-    resource: Optional[str] = None
-    decision: Optional[str] = None
-    reason: Optional[str] = None
-    trace_id: Optional[str] = None
+    resource: str | None = None
+    decision: str | None = None
+    reason: str | None = None
+    trace_id: str | None = None
     context: dict[str, Any]
     created_at: datetime
+    # HIPAA audit-integrity rollout: PR2/PR#5 added this column and the
+    # worker has classified every event ("valid"/"invalid"/"unsigned")
+    # since PR3a's deployment, but nothing surfaced it through this read
+    # API until now -- a platform_admin querying /audit/events had no way
+    # to see whether any event was ever actually verified. Always present
+    # (DB column is NOT NULL with server_default="unsigned"), never
+    # Optional -- matches AuditEventRecord.integrity_status exactly.
+    integrity_status: str
 
 
 class AuditEventListResponse(BaseModel):
