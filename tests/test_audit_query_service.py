@@ -10,7 +10,7 @@ from services import audit_query_service
 def _add(db_session, event_id, minutes_offset=0, **overrides):
     row = AuditEventRecord(
         event_id=event_id,
-        timestamp=datetime(2026, 1, 1, 12, 0, 0) + timedelta(minutes=minutes_offset),
+        timestamp=datetime(2026, 1, 1, 12, 0, 0) + timedelta(minutes=minutes_offset),  # noqa: DTZ001 -- AuditEventRecord.timestamp is a naive DateTime column (db/models.py); an aware value here would mismatch it, not fix anything
         service=overrides.get("service", "auth"),
         event_type=overrides.get("event_type", "auth_login"),
         user_id=overrides.get("user_id", "u1"),
@@ -89,8 +89,8 @@ def test_filters_by_timestamp_range(db_session):
         db_session,
         page=1,
         page_size=20,
-        from_timestamp=datetime(2026, 1, 1, 12, 5, 0),
-        to_timestamp=datetime(2026, 1, 1, 12, 15, 0),
+        from_timestamp=datetime(2026, 1, 1, 12, 5, 0),  # noqa: DTZ001 -- matches the naive AuditEventRecord.timestamp column being filtered
+        to_timestamp=datetime(2026, 1, 1, 12, 15, 0),  # noqa: DTZ001 -- matches the naive AuditEventRecord.timestamp column being filtered
     )
     assert total == 1
     assert rows[0].event_id == "e2"
@@ -142,7 +142,7 @@ def test_no_filters_returns_all(db_session):
     _add(db_session, "e3")
     db_session.commit()
 
-    rows, total = audit_query_service.list_audit_events(db_session, page=1, page_size=20)
+    _rows, total = audit_query_service.list_audit_events(db_session, page=1, page_size=20)
     assert total == 3
 
 

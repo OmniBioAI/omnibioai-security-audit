@@ -27,7 +27,7 @@ def _seed(session_factory, count=3):
         db.add(
             AuditEventRecord(
                 event_id=f"evt-{i}",
-                timestamp=datetime(2026, 1, 1, 12, 0, 0) + timedelta(minutes=i),
+                timestamp=datetime(2026, 1, 1, 12, 0, 0) + timedelta(minutes=i),  # noqa: DTZ001 -- AuditEventRecord.timestamp is a naive DateTime column (db/models.py)
                 service="auth",
                 event_type="auth_login",
                 user_id="u1",
@@ -160,11 +160,11 @@ def test_filter_by_service_via_query_param(audit_events_client):
     client, sessions = audit_events_client
     db = sessions()
     db.add(AuditEventRecord(
-        event_id="e1", timestamp=datetime(2026, 1, 1), service="auth",
+        event_id="e1", timestamp=datetime(2026, 1, 1), service="auth",  # noqa: DTZ001 -- naive DateTime column
         event_type="auth_login", context={},
     ))
     db.add(AuditEventRecord(
-        event_id="e2", timestamp=datetime(2026, 1, 1), service="policy",
+        event_id="e2", timestamp=datetime(2026, 1, 1), service="policy",  # noqa: DTZ001 -- naive DateTime column
         event_type="policy_decision", context={},
     ))
     db.commit()
@@ -183,11 +183,11 @@ def test_filter_by_decision_and_event_type_via_query_params(audit_events_client)
     client, sessions = audit_events_client
     db = sessions()
     db.add(AuditEventRecord(
-        event_id="e1", timestamp=datetime(2026, 1, 1), service="auth",
+        event_id="e1", timestamp=datetime(2026, 1, 1), service="auth",  # noqa: DTZ001 -- naive DateTime column
         event_type="user_suspended", decision="success", context={},
     ))
     db.add(AuditEventRecord(
-        event_id="e2", timestamp=datetime(2026, 1, 1), service="auth",
+        event_id="e2", timestamp=datetime(2026, 1, 1), service="auth",  # noqa: DTZ001 -- naive DateTime column
         event_type="user_suspended", decision="failure", context={},
     ))
     db.commit()
@@ -208,11 +208,11 @@ def test_filter_by_integrity_status_via_query_param(audit_events_client):
     client, sessions = audit_events_client
     db = sessions()
     db.add(AuditEventRecord(
-        event_id="e1", timestamp=datetime(2026, 1, 1), service="tes",
+        event_id="e1", timestamp=datetime(2026, 1, 1), service="tes",  # noqa: DTZ001 -- naive DateTime column
         event_type="workflow_execution_denied", context={}, integrity_status="valid",
     ))
     db.add(AuditEventRecord(
-        event_id="e2", timestamp=datetime(2026, 1, 1), service="tes",
+        event_id="e2", timestamp=datetime(2026, 1, 1), service="tes",  # noqa: DTZ001 -- naive DateTime column
         event_type="workflow_execution_denied", context={}, integrity_status="invalid",
     ))
     db.commit()

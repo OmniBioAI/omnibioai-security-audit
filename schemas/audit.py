@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict
 
@@ -15,12 +15,12 @@ class AuditEventOut(BaseModel):
     timestamp: datetime
     service: str
     event_type: str
-    user_id: Optional[str] = None
+    user_id: str | None = None
     action: str
-    resource: Optional[str] = None
-    decision: Optional[str] = None
-    reason: Optional[str] = None
-    trace_id: Optional[str] = None
+    resource: str | None = None
+    decision: str | None = None
+    reason: str | None = None
+    trace_id: str | None = None
     context: dict[str, Any]
     created_at: datetime
     # HIPAA audit-integrity rollout: PR2/PR#5 added this column and the

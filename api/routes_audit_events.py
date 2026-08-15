@@ -1,5 +1,4 @@
 from datetime import datetime
-from typing import Optional
 
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
@@ -20,22 +19,22 @@ router = APIRouter()
 def list_audit_events(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
-    user_id: Optional[str] = Query(None),
-    service: Optional[str] = Query(None),
-    event_type: Optional[str] = Query(None),
-    decision: Optional[str] = Query(None),
-    from_timestamp: Optional[datetime] = Query(None),
-    to_timestamp: Optional[datetime] = Query(None),
+    user_id: str | None = Query(None),
+    service: str | None = Query(None),
+    event_type: str | None = Query(None),
+    decision: str | None = Query(None),
+    from_timestamp: datetime | None = Query(None),  # noqa: B008 -- FastAPI's own documented query-param pattern, not a mutable-default bug
+    to_timestamp: datetime | None = Query(None),  # noqa: B008 -- FastAPI's own documented query-param pattern, not a mutable-default bug
     # HIPAA audit-integrity rollout: lets a platform_admin ask "show me
     # every event that failed signature verification" (integrity_status=
     # invalid) or isolate the still-unsigned backlog -- not just see the
-    # field per-row. No validation beyond Optional[str]: the DB column
+    # field per-row. No validation beyond `str | None`: the DB column
     # itself is the source of truth for what values exist ("valid"/
     # "invalid"/"unsigned" today, see audit/config.py's classifier), and
     # an unrecognized value here just filters to zero rows, not an error.
-    integrity_status: Optional[str] = Query(None),
-    db: Session = Depends(get_db),
-    _admin: dict = Depends(require_platform_admin),
+    integrity_status: str | None = Query(None),
+    db: Session = Depends(get_db),  # noqa: B008 -- FastAPI's own documented dependency-injection pattern, not a mutable-default bug
+    _admin: dict = Depends(require_platform_admin),  # noqa: B008 -- FastAPI's own documented dependency-injection pattern, not a mutable-default bug
 ) -> AuditEventListResponse:
     rows, total = audit_query_service.list_audit_events(
         db,
