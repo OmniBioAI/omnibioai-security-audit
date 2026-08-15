@@ -211,6 +211,9 @@ authentication" above), the latter has no auth at all today.
 | `AUDIT_DATABASE_URL` | `mysql+pymysql://root:root@localhost:3306/omnibioai_audit` | Durable audit-event store the consumer writes into and `/audit/events` queries |
 | `AUDIT_CONSUMER_GROUP` | `audit-workers` | Redis Streams consumer group name |
 | `AUDIT_CONSUMER_NAME` | `worker-{pid}` | Per-process consumer identity within the group |
+| `AUDIT_PEL_MIN_IDLE_MS` | `30000` | How long a delivered-but-unacked message must sit idle before any worker (this one or another replica) may reclaim it — see `worker/main.py::sweep_pending` |
+| `AUDIT_PEL_MAX_DELIVERIES` | `5` | Delivery attempts (original + reclaims) before an entry is treated as poison and ACKed without further processing |
+| `AUDIT_PEL_SWEEP_BATCH` | `100` | Max stale Pending Entries List entries inspected per sweep |
 
 ---
 

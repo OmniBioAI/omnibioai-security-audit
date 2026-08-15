@@ -19,6 +19,36 @@ class AuditConfig:
     CONSUMER_GROUP = os.getenv("AUDIT_CONSUMER_GROUP", "audit-workers")
     CONSUMER_NAME = os.getenv("AUDIT_CONSUMER_NAME", f"worker-{os.getpid()}")
 
+    # HIPAA P0 (abandoned-PEL-entry recovery): a message this consumer
+    # group delivered but never acked -- crash before persistence, a
+    # transient MySQL failure, the process getting killed mid-write --
+    # sits in the group's Pending Entries List. CONSUMER_NAME above is
+    # per-process (pid-based) by design (multiple worker replicas must
+    # never collide on one identity), which means a crashed worker's
+    # pending entries are *never* revisited by that same identity again --
+    # nothing "restarts" a dead pid. Recovery has to come from any live
+    # worker sweeping the whole group's PEL, not from self-continuity, so
+    # these thresholds are named generically (PEL_*, not "own pending").
+    #
+    # PEL_MIN_IDLE_MS: how long an entry must sit unacked before ANY
+    # worker (including the one that originally received it, if it's
+    # still alive and just slow) is allowed to reclaim it. Must safely
+    # exceed one full handle_message() -- including a real MySQL
+    # round-trip -- under normal load, or a live-but-slow worker would
+    # have its own in-flight message reclaimed out from under it.
+    PEL_MIN_IDLE_MS = int(os.getenv("AUDIT_PEL_MIN_IDLE_MS", "30000"))
+    # PEL_MAX_DELIVERIES: once an entry has been *delivered* (original
+    # read + every reclaim) this many times without a successful ack, it
+    # is treated as poison -- a deterministically-unparseable payload,
+    # not a transient failure -- and ACKed without further processing so
+    # it can never loop forever. See worker/main.py::sweep_pending.
+    PEL_MAX_DELIVERIES = int(os.getenv("AUDIT_PEL_MAX_DELIVERIES", "5"))
+    # PEL_SWEEP_BATCH: cap on stale entries inspected per sweep call, same
+    # "bounded work per loop iteration" shape MAX_ENTRIES-style caps use
+    # elsewhere in this platform -- a PEL of unbounded size must not turn
+    # one sweep into an unbounded-latency Redis call.
+    PEL_SWEEP_BATCH = int(os.getenv("AUDIT_PEL_SWEEP_BATCH", "100"))
+
     # PR2 of the audit:events integrity remediation (see audit/signing.py,
     # PR1): reuses the same JWT_SECRET every other platform service (and
     # this repo's own audit/jwt_verify.py) already reads -- not a new

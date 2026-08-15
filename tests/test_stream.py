@@ -1,8 +1,7 @@
 import pytest
-from unittest.mock import MagicMock, patch
 from redis.exceptions import ResponseError
-from audit.config import AuditConfig
 
+from audit.config import AuditConfig
 
 # ---------------------------------------------------------------------------
 # StreamReader.read()
@@ -128,4 +127,120 @@ def test_ack_calls_xack(stream_reader):
 
     mock_redis.xack.assert_called_once_with(
         AuditConfig.STREAM_NAME, AuditConfig.CONSUMER_GROUP, "1-0"
+    )
+
+
+# ---------------------------------------------------------------------------
+# HIPAA P0: StreamReader.claim_stale() -- abandoned-PEL-entry recovery.
+# ---------------------------------------------------------------------------
+
+def _pending_entry(message_id, times_delivered):
+    return {
+        "message_id": message_id,
+        "consumer": "some-dead-consumer",
+        "time_since_delivered": 60000,
+        "times_delivered": times_delivered,
+    }
+
+
+def test_claim_stale_queries_xpending_range_with_config_defaults(stream_reader):
+    reader, mock_redis = stream_reader
+    mock_redis.xpending_range.return_value = []
+
+    claimed, poison_ids = reader.claim_stale("worker-2")
+
+    mock_redis.xpending_range.assert_called_once_with(
+        AuditConfig.STREAM_NAME,
+        AuditConfig.CONSUMER_GROUP,
+        min="-",
+        max="+",
+        count=AuditConfig.PEL_SWEEP_BATCH,
+        idle=AuditConfig.PEL_MIN_IDLE_MS,
+    )
+    assert claimed == []
+    assert poison_ids == []
+
+
+def test_claim_stale_returns_empty_when_nothing_stale(stream_reader):
+    reader, mock_redis = stream_reader
+    mock_redis.xpending_range.return_value = []
+
+    claimed, poison_ids = reader.claim_stale("worker-2")
+
+    assert claimed == []
+    assert poison_ids == []
+    mock_redis.xclaim.assert_not_called()
+    mock_redis.xack.assert_not_called()
+
+
+def test_claim_stale_reclaims_entries_under_max_deliveries(stream_reader):
+    reader, mock_redis = stream_reader
+    mock_redis.xpending_range.return_value = [_pending_entry("5-0", times_delivered=2)]
+    mock_redis.xclaim.return_value = [("5-0", {"data": "{}"})]
+
+    claimed, poison_ids = reader.claim_stale("worker-2")
+
+    mock_redis.xclaim.assert_called_once_with(
+        AuditConfig.STREAM_NAME,
+        AuditConfig.CONSUMER_GROUP,
+        "worker-2",
+        AuditConfig.PEL_MIN_IDLE_MS,
+        ["5-0"],
+    )
+    mock_redis.xack.assert_not_called()
+    assert claimed == [("5-0", {"data": "{}"})]
+    assert poison_ids == []
+
+
+def test_claim_stale_acks_poison_entries_without_reclaiming(stream_reader):
+    reader, mock_redis = stream_reader
+    mock_redis.xpending_range.return_value = [
+        _pending_entry("6-0", times_delivered=AuditConfig.PEL_MAX_DELIVERIES)
+    ]
+
+    claimed, poison_ids = reader.claim_stale("worker-2")
+
+    mock_redis.xack.assert_called_once_with(
+        AuditConfig.STREAM_NAME, AuditConfig.CONSUMER_GROUP, "6-0"
+    )
+    mock_redis.xclaim.assert_not_called()
+    assert claimed == []
+    assert poison_ids == ["6-0"]
+
+
+def test_claim_stale_splits_a_mixed_batch_correctly(stream_reader):
+    reader, mock_redis = stream_reader
+    mock_redis.xpending_range.return_value = [
+        _pending_entry("7-0", times_delivered=1),
+        _pending_entry("7-1", times_delivered=AuditConfig.PEL_MAX_DELIVERIES + 3),
+        _pending_entry("7-2", times_delivered=AuditConfig.PEL_MAX_DELIVERIES - 1),
+    ]
+    mock_redis.xclaim.return_value = [("7-0", {"data": "a"}), ("7-2", {"data": "c"})]
+
+    claimed, poison_ids = reader.claim_stale("worker-2")
+
+    mock_redis.xack.assert_called_once_with(
+        AuditConfig.STREAM_NAME, AuditConfig.CONSUMER_GROUP, "7-1"
+    )
+    mock_redis.xclaim.assert_called_once_with(
+        AuditConfig.STREAM_NAME,
+        AuditConfig.CONSUMER_GROUP,
+        "worker-2",
+        AuditConfig.PEL_MIN_IDLE_MS,
+        ["7-0", "7-2"],
+    )
+    assert poison_ids == ["7-1"]
+    assert claimed == [("7-0", {"data": "a"}), ("7-2", {"data": "c"})]
+
+
+def test_claim_stale_honors_explicit_overrides_over_config_defaults(stream_reader):
+    reader, mock_redis = stream_reader
+    mock_redis.xpending_range.return_value = []
+
+    reader.claim_stale(
+        "worker-2", group="other-group", min_idle_ms=999, max_deliveries=1, batch=7,
+    )
+
+    mock_redis.xpending_range.assert_called_once_with(
+        AuditConfig.STREAM_NAME, "other-group", min="-", max="+", count=7, idle=999,
     )
