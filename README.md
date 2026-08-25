@@ -16,7 +16,7 @@ The audit system captures and streams security-relevant events from:
 
 It is designed for:
 
-* Sub-millisecond logging overhead
+* Low-overhead, non-blocking event publication
 * Distributed microservices
 * HPC-scale workloads
 * Zero-trust architectures
@@ -157,7 +157,7 @@ production deployment has switched issuance to RS256 yet — see the
 
 ## Event Types
 
-Common events tracked:
+Examples of events tracked (the event type is extensible):
 
 * `auth_login`
 * `auth_failed`
@@ -194,7 +194,7 @@ curl http://localhost:8004/health
 |----------|--------|------|-------------|
 | `/health` | GET | — | Health check |
 | `/audit/test` | GET | none today | Write-side ingestion smoke test |
-| `/audit/events` | GET | `platform_admin` role | Query audit events — `page`/`page_size`, plus optional `user_id`/`service`/`event_type`/`decision`/`from_timestamp`/`to_timestamp` filters |
+| `/audit/events` | GET | `platform_admin` role | Query audit events — `page`/`page_size`, plus optional `user_id`/`service`/`event_type`/`decision`/`integrity_status`/`from_timestamp`/`to_timestamp` filters |
 
 `/audit/events` is deliberately a separate router from `/audit/test` —
 the former is the platform-admin-gated read API (see "Platform admin
@@ -204,9 +204,9 @@ authentication" above), the latter has no auth at all today.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `REDIS_URL` | `redis://redis:6379` | Redis Streams backend |
+| `REDIS_URL` | `redis://localhost:6379` | Redis Streams backend |
 | `AUDIT_STREAM` | `audit:events` | Stream name |
-| `SERVICE_NAME` | `omnibioai-security-audit` | Service identifier |
+| `SERVICE_NAME` | `unknown-service` | Service identifier included in emitted events |
 | `AUDIT_MAXLEN` | `1000000` | Max stream length |
 | `AUDIT_DATABASE_URL` | `mysql+pymysql://root:root@localhost:3306/omnibioai_audit` | Durable audit-event store the consumer writes into and `/audit/events` queries |
 | `AUDIT_CONSUMER_GROUP` | `audit-workers` | Redis Streams consumer group name |
@@ -214,6 +214,14 @@ authentication" above), the latter has no auth at all today.
 | `AUDIT_PEL_MIN_IDLE_MS` | `30000` | How long a delivered-but-unacked message must sit idle before any worker (this one or another replica) may reclaim it — see `worker/main.py::sweep_pending` |
 | `AUDIT_PEL_MAX_DELIVERIES` | `5` | Delivery attempts (original + reclaims) before an entry is treated as poison and ACKed without further processing |
 | `AUDIT_PEL_SWEEP_BATCH` | `100` | Max stale Pending Entries List entries inspected per sweep |
+| `JWT_SECRET` | `change-me` *(development only)* | HS256 signing/verification secret; production must set the value used by `omnibioai-auth` |
+| `IAM_URL` | `http://omnibioai-auth:8000` | Auth service URL used for RS256/JWKS verification |
+
+`JWT_SECRET=change-me` is for development only. Production deployments
+must provide a secure secret consistent with the authentication service's
+HS256 signing configuration. Invalid or missing tokens return `401`; valid
+tokens without the literal `platform_admin` role return `403` for the audit
+query API.
 
 ---
 
@@ -276,6 +284,19 @@ data = reader.read()
 print(data)
 ```
 
+### Run the worker locally
+
+The durable consumer runs separately from the FastAPI application:
+
+```bash
+python -m worker.main
+```
+
+It creates the configured Redis consumer group, reads new events, persists
+them to MySQL, acknowledges successfully handled messages, and reclaims
+stale Pending Entries List messages. Configure `REDIS_URL` and
+`AUDIT_DATABASE_URL` before starting it.
+
 ---
 
 ## Consumer Pipeline
@@ -295,9 +316,9 @@ You can extend consumers for:
 cd ~/Desktop/machine/omnibioai-security-audit
 pytest tests/ -v --cov=.
 
-# 99% coverage
-# Covers: audit logger, stream reader, decorators,
-#         context management, event types
+# Covers the audit logger, stream reader, decorators, context management,
+# event types, API routes, and worker behavior. Review the measured coverage
+# output rather than relying on a fixed percentage claim.
 ```
 
 ---
@@ -310,7 +331,8 @@ Audit failure must NOT break system flow.
 
 ### 2. Append-only logs
 
-Redis Streams ensure immutable audit history.
+Redis Streams provide append-only event delivery, while the MySQL sink is the
+durable source of truth for retained audit history.
 
 ### 3. Distributed-first
 
@@ -348,7 +370,7 @@ This service integrates with:
 | Async non-blocking logging | ✓ Stable |
 | Fail-open design | ✓ Stable |
 | Distributed trace ID support | ✓ Stable |
-| 99% test coverage | ✓ Stable |
+| Broad automated test coverage | ✓ Stable |
 | MySQL sink + queryable read API (`worker/`, `db/`, `/audit/events`) | ✓ Stable |
 | OpenSearch / additional sink backends | Planned |
 | Real-time security dashboard | Planned |
@@ -373,4 +395,3 @@ This service integrates with:
 ## License
 
 Apache 2.0
-
