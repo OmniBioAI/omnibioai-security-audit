@@ -41,6 +41,8 @@ from jwt.exceptions import PyJWKClientError
 from audit.config import AuditConfig
 
 JWT_SECRET = os.environ.get("JWT_SECRET", "change-me")
+JWT_ISSUER = os.environ.get("JWT_ISSUER", "omnibioai-auth")
+JWT_AUDIENCE = os.environ.get("JWT_AUDIENCE", "omnibioai-platform")
 
 # omnibioai-auth's JWKS endpoint (app/api/routes_jwks.py) -- publishes the
 # public half of whatever key app/core/rsa_keys.py loaded/generated, keyed
@@ -116,7 +118,11 @@ def _decode(token: str) -> dict[str, Any]:
             # to an unverified path.
             raise TokenInvalid(f"jwks fetch failed: {e}")
         try:
-            return jwt.decode(token, signing_key, algorithms=["RS256"])
+            payload = jwt.decode(
+                token, signing_key, algorithms=["RS256"],
+                options={"verify_aud": False},
+            )
+            return _validate_platform_claims(payload)
         except jwt.ExpiredSignatureError:
             raise TokenInvalid("expired")
         except jwt.InvalidTokenError as e:
@@ -124,13 +130,35 @@ def _decode(token: str) -> dict[str, Any]:
 
     if alg == "HS256":
         try:
-            return jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
+            payload = jwt.decode(
+                token, JWT_SECRET, algorithms=["HS256"],
+                options={"verify_aud": False},
+            )
+            return _validate_platform_claims(payload)
         except jwt.ExpiredSignatureError:
             raise TokenInvalid("expired")
         except jwt.InvalidTokenError as e:
             raise TokenInvalid(f"invalid token: {e}")
 
     raise TokenInvalid(f"unsupported alg: {alg!r}")
+
+
+def _validate_platform_claims(payload: dict[str, Any]) -> dict[str, Any]:
+    """Validate Auth's platform issuer/audience contract.
+
+    Claims remain optional for the documented rolling-deploy compatibility
+    window, but a present issuer or audience must match the platform values.
+    Manual audience validation preserves that compatibility because PyJWT's
+    ``audience=`` argument rejects tokens that predate these claims.
+    """
+    if payload.get("iss") is not None and payload["iss"] != JWT_ISSUER:
+        raise TokenInvalid("invalid issuer")
+    audience = payload.get("aud")
+    if audience is not None:
+        values = audience if isinstance(audience, list) else [audience]
+        if JWT_AUDIENCE not in values:
+            raise TokenInvalid("invalid audience")
+    return payload
 
 
 def verify_token(token: str | None) -> dict[str, Any]:

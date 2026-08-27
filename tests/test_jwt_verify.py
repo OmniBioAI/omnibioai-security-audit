@@ -97,6 +97,19 @@ def test_valid_token_without_type_claim_succeeds():
     assert payload["sub"] == "1"
 
 
+def test_platform_issuer_and_audience_contract():
+    valid = _token(sub="1", iss="omnibioai-auth", aud="omnibioai-platform")
+    assert verify_token(valid)["aud"] == "omnibioai-platform"
+
+    wrong_audience = _token(sub="1", aud="another-service")
+    with pytest.raises(TokenInvalid, match="invalid audience"):
+        verify_token(wrong_audience)
+
+    wrong_issuer = _token(sub="1", iss="untrusted", aud="omnibioai-platform")
+    with pytest.raises(TokenInvalid, match="invalid issuer"):
+        verify_token(wrong_issuer)
+
+
 # ---------------------------------------------------------------------------
 # Failure paths
 # ---------------------------------------------------------------------------
