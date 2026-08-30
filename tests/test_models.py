@@ -13,6 +13,8 @@ case) and assert they differ -- the check that would have caught the bug.
 import time
 from datetime import datetime
 
+import pytest
+
 from audit.models import AuditEvent
 
 
@@ -33,6 +35,19 @@ def test_timestamp_differs_across_instances():
 def test_explicitly_supplied_event_id_is_respected():
     event = AuditEvent(service="svc", event_type="test", event_id="fixed-id-123")
     assert event.event_id == "fixed-id-123"
+
+
+def test_organization_tenant_scope_requires_first_class_id():
+    from pydantic import ValidationError
+    with pytest.raises(ValidationError):
+        AuditEvent(service="svc", event_type="test", tenant_scope="organization")
+
+
+def test_global_and_unknown_are_distinct():
+    global_event = AuditEvent(service="svc", event_type="maintenance", tenant_scope="global")
+    unknown_event = AuditEvent(service="svc", event_type="test")
+    assert global_event.tenant_scope == "global"
+    assert unknown_event.tenant_scope == "unknown"
 
 
 def test_explicitly_supplied_timestamp_is_respected():

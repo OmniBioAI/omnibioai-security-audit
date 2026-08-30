@@ -101,6 +101,31 @@ def test_parse_audit_event_preserves_all_fields():
     assert isinstance(event.timestamp, datetime)
 
 
+def test_parse_audit_event_preserves_first_class_tenant():
+    event = parse_audit_event(json.dumps({
+        "event_id": "tenant-1", "timestamp": "2026-01-01T12:00:00",
+        "service": "tes", "event_type": "run", "organization_id": "org-7",
+        "tenant_scope": "organization", "context": {"organization_id": "wrong"},
+    }))
+    assert event.organization_id == "org-7"
+    assert event.tenant_scope == "organization"
+
+
+def test_legacy_event_without_tenant_is_unknown_not_global():
+    event = parse_audit_event(json.dumps({"service": "svc", "event_type": "test"}))
+    assert event.organization_id is None
+    assert event.tenant_scope == "unknown"
+
+
+def test_tenant_is_never_inferred_from_context():
+    event = parse_audit_event(json.dumps({
+        "service": "svc", "event_type": "test",
+        "context": {"organization_id": "org-context-only"},
+    }))
+    assert event.organization_id is None
+    assert event.tenant_scope == "unknown"
+
+
 def test_parse_audit_event_raises_on_invalid_json():
     with pytest.raises(json.JSONDecodeError):
         parse_audit_event("not-json")

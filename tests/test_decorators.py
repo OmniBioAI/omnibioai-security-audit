@@ -224,6 +224,8 @@ async def test_audit_decorator_enriches_context_with_verified_identity():
             "verified": True,
         }
     }
+    assert event.organization_id == "7"
+    assert event.tenant_scope == "organization"
 
 
 @pytest.mark.asyncio

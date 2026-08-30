@@ -172,6 +172,36 @@ async def test_log_real_event_id_survives_serialization(audit_logger):
     assert stored["event_id"] == "fixed-id-123"
 
 
+@pytest.mark.asyncio
+async def test_log_serializes_first_class_tenant_in_signed_payload(audit_logger):
+    logger, mock_redis = audit_logger
+    mock_redis.xadd = AsyncMock()
+    await logger.log(AuditEvent(
+        service="tes", event_type="run", organization_id="org-7",
+        tenant_scope="organization",
+    ))
+    stored = json.loads(mock_redis.xadd.call_args[0][1]["data"])
+    assert stored["organization_id"] == "org-7"
+    assert stored["tenant_scope"] == "organization"
+
+
+@pytest.mark.asyncio
+async def test_tenant_field_is_covered_by_signature(audit_logger):
+    logger, mock_redis = audit_logger
+    mock_redis.xadd = AsyncMock()
+    await logger.log(AuditEvent(
+        service="tes", event_type="run", organization_id="org-7",
+        tenant_scope="organization",
+    ))
+    fields = mock_redis.xadd.call_args[0][1]
+    from audit.signing import verify_audit_event
+    assert verify_audit_event("tes", fields["data"], fields["sig"], AuditConfig.EVENT_SIGNING_SECRET)
+    assert not verify_audit_event(
+        "tes", fields["data"].replace('"org-7"', '"org-8"'), fields["sig"],
+        AuditConfig.EVENT_SIGNING_SECRET,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Error path: failures must never propagate
 # ---------------------------------------------------------------------------

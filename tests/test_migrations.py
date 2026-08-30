@@ -14,6 +14,7 @@ EXPECTED_COLUMNS = {
     "event_id", "timestamp", "service", "event_type", "user_id", "action",
     "resource", "decision", "reason", "trace_id", "context", "created_at",
     "integrity_status",
+    "organization_id", "tenant_scope",
 }
 
 
@@ -84,6 +85,34 @@ def test_integrity_status_column_exists_after_upgrade(tmp_path):
     columns = {c["name"]: c for c in inspector.get_columns("audit_events")}
     assert "integrity_status" in columns
     assert columns["integrity_status"]["nullable"] is False
+
+
+def test_tenant_columns_and_query_index_exist_after_upgrade(tmp_path):
+    db_file = tmp_path / "migration_test.db"
+    cfg = _alembic_config(f"sqlite:///{db_file}")
+    command.upgrade(cfg, "head")
+    engine = create_engine(f"sqlite:///{db_file}")
+    inspector = inspect(engine)
+    columns = {c["name"]: c for c in inspector.get_columns("audit_events")}
+    assert columns["organization_id"]["nullable"] is True
+    assert columns["tenant_scope"]["nullable"] is False
+    indexes = {i["name"] for i in inspector.get_indexes("audit_events")}
+    assert "ix_audit_events_org_timestamp_event" in indexes
+
+
+def test_legacy_rows_are_unknown_after_tenant_migration(tmp_path):
+    db_file = tmp_path / "migration_test.db"
+    cfg = _alembic_config(f"sqlite:///{db_file}")
+    command.upgrade(cfg, "0002_integrity_status")
+    engine = create_engine(f"sqlite:///{db_file}")
+    with engine.begin() as conn:
+        from sqlalchemy import text
+        conn.execute(text("INSERT INTO audit_events (event_id, timestamp, service, event_type, action, context) VALUES ('legacy', '2026-01-01 00:00:00', 'svc', 'test', '', '{}')"))
+    command.upgrade(cfg, "head")
+    with engine.begin() as conn:
+        from sqlalchemy import text
+        row = conn.execute(text("SELECT organization_id, tenant_scope FROM audit_events WHERE event_id='legacy'")).fetchone()
+    assert row == (None, "unknown")
 
 
 def test_existing_rows_backfill_to_unsigned_on_upgrade(tmp_path):

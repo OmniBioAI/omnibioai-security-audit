@@ -36,6 +36,20 @@ def test_sink_write_persists_event(db_session):
     assert fetched.user_id == "u1"
 
 
+def test_sink_write_persists_first_class_tenant(db_session):
+    Sink(db_session).write(_event(organization_id="org-7", tenant_scope="organization"))
+    fetched = db_session.get(AuditEventRecord, "evt-1")
+    assert fetched.organization_id == "org-7"
+    assert fetched.tenant_scope == "organization"
+
+
+def test_sink_legacy_event_defaults_to_unknown_tenant(db_session):
+    Sink(db_session).write(_event())
+    fetched = db_session.get(AuditEventRecord, "evt-1")
+    assert fetched.organization_id is None
+    assert fetched.tenant_scope == "unknown"
+
+
 def test_sink_write_preserves_context(db_session):
     sink = Sink(db_session)
     sink.write(_event(context={"a": 1, "b": {"c": 2}}))
