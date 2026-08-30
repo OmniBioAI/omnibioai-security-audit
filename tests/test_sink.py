@@ -1,16 +1,16 @@
 """PR4.2 regression tests: Sink now persists to audit_events instead of
 printing (consumers/sink.py). Supersedes the print-based Sink tests that
 used to live in tests/test_processor.py."""
-from datetime import datetime
+from datetime import datetime, timezone
 
-from db.models import AuditEventRecord
 from consumers.sink import Sink
+from db.models import AuditEventRecord
 
 
 def _event(event_id="evt-1", **overrides):
     payload = {
         "event_id": event_id,
-        "timestamp": datetime(2026, 1, 1, 12, 0, 0),
+        "timestamp": datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc),
         "service": "auth",
         "event_type": "auth_login",
         "user_id": "u1",
@@ -79,7 +79,7 @@ def test_sink_write_handles_optional_fields_missing(db_session):
     sink = Sink(db_session)
     minimal = {
         "event_id": "evt-minimal",
-        "timestamp": datetime(2026, 1, 1),
+        "timestamp": datetime(2026, 1, 1, tzinfo=timezone.utc),
         "service": "svc",
         "event_type": "test",
     }

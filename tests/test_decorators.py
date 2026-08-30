@@ -1,6 +1,8 @@
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
-from audit.context import trace_id_var, user_id_var, identity_var
+
+import pytest
+
+from audit.context import identity_var, trace_id_var, user_id_var
 
 
 @pytest.fixture(autouse=True)

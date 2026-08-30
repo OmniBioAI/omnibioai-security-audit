@@ -9,9 +9,11 @@ ever sees them. Tests that assert xadd is called supply a mock event whose
 exercise the real serializer construct a real AuditEvent.
 """
 import json
-import pytest
 from datetime import datetime
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+
 from audit.config import AuditConfig
 from audit.models import AuditEvent
 
@@ -45,7 +47,7 @@ async def test_log_writes_to_redis_stream(audit_logger):
     logger, mock_redis = audit_logger
     mock_redis.xadd = AsyncMock()
 
-    event, payload = _serializable_event(service="auth", event_type="auth_login",
+    event, _payload = _serializable_event(service="auth", event_type="auth_login",
                                          user_id="u1", action="login", decision="success")
     await logger.log(event)
 
@@ -88,7 +90,7 @@ async def test_log_event_includes_all_fields(audit_logger):
     logger, mock_redis = audit_logger
     mock_redis.xadd = AsyncMock()
 
-    event, expected = _serializable_event(
+    event, _expected = _serializable_event(
         service="iam",
         event_type="iam_cache_hit",
         user_id="u2",

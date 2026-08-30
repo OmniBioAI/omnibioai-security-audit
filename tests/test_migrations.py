@@ -4,9 +4,10 @@ MySQL instance. Mirrors omnibioai-auth/tests/test_migrations.py's pattern.
 """
 from pathlib import Path
 
-from alembic import command
 from alembic.config import Config
 from sqlalchemy import create_engine, inspect
+
+from alembic import command
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 

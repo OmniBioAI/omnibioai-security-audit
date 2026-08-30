@@ -1,10 +1,11 @@
 import json
-import pytest
 from datetime import datetime
 
-from audit.models import AuditEvent
-from consumers.processor import process_event, parse_audit_event
+import pytest
+from pydantic import ValidationError
 
+from audit.models import AuditEvent
+from consumers.processor import parse_audit_event, process_event
 
 # ---------------------------------------------------------------------------
 # process_event
@@ -133,5 +134,5 @@ def test_parse_audit_event_raises_on_invalid_json():
 
 def test_parse_audit_event_raises_on_missing_required_fields():
     raw = json.dumps({"user_id": "u1"})  # missing service/event_type
-    with pytest.raises(Exception):
+    with pytest.raises(ValidationError):
         parse_audit_event(raw)
