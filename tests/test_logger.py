@@ -9,9 +9,11 @@ ever sees them. Tests that assert xadd is called supply a mock event whose
 exercise the real serializer construct a real AuditEvent.
 """
 import json
-import pytest
 from datetime import datetime
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+
 from audit.config import AuditConfig
 from audit.models import AuditEvent
 
@@ -45,7 +47,7 @@ async def test_log_writes_to_redis_stream(audit_logger):
     logger, mock_redis = audit_logger
     mock_redis.xadd = AsyncMock()
 
-    event, payload = _serializable_event(service="auth", event_type="auth_login",
+    event, _payload = _serializable_event(service="auth", event_type="auth_login",
                                          user_id="u1", action="login", decision="success")
     await logger.log(event)
 
@@ -88,7 +90,7 @@ async def test_log_event_includes_all_fields(audit_logger):
     logger, mock_redis = audit_logger
     mock_redis.xadd = AsyncMock()
 
-    event, expected = _serializable_event(
+    event, _expected = _serializable_event(
         service="iam",
         event_type="iam_cache_hit",
         user_id="u2",
@@ -170,6 +172,36 @@ async def test_log_real_event_id_survives_serialization(audit_logger):
     raw = mock_redis.xadd.call_args[0][1]["data"]
     stored = json.loads(raw)
     assert stored["event_id"] == "fixed-id-123"
+
+
+@pytest.mark.asyncio
+async def test_log_serializes_first_class_tenant_in_signed_payload(audit_logger):
+    logger, mock_redis = audit_logger
+    mock_redis.xadd = AsyncMock()
+    await logger.log(AuditEvent(
+        service="tes", event_type="run", organization_id="org-7",
+        tenant_scope="organization",
+    ))
+    stored = json.loads(mock_redis.xadd.call_args[0][1]["data"])
+    assert stored["organization_id"] == "org-7"
+    assert stored["tenant_scope"] == "organization"
+
+
+@pytest.mark.asyncio
+async def test_tenant_field_is_covered_by_signature(audit_logger):
+    logger, mock_redis = audit_logger
+    mock_redis.xadd = AsyncMock()
+    await logger.log(AuditEvent(
+        service="tes", event_type="run", organization_id="org-7",
+        tenant_scope="organization",
+    ))
+    fields = mock_redis.xadd.call_args[0][1]
+    from audit.signing import verify_audit_event
+    assert verify_audit_event("tes", fields["data"], fields["sig"], AuditConfig.EVENT_SIGNING_SECRET)
+    assert not verify_audit_event(
+        "tes", fields["data"].replace('"org-7"', '"org-8"'), fields["sig"],
+        AuditConfig.EVENT_SIGNING_SECRET,
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -10,6 +10,7 @@ def list_audit_events(
     page: int,
     page_size: int,
     user_id: str | None = None,
+    organization_id: str | None = None,
     service: str | None = None,
     event_type: str | None = None,
     decision: str | None = None,
@@ -32,6 +33,8 @@ def list_audit_events(
 
     if user_id is not None:
         query = query.filter(AuditEventRecord.user_id == user_id)
+    if organization_id is not None:
+        query = query.filter(AuditEventRecord.organization_id == organization_id)
     if service is not None:
         query = query.filter(AuditEventRecord.service == service)
     if event_type is not None:

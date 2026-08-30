@@ -16,6 +16,8 @@ class AuditEventOut(BaseModel):
     service: str
     event_type: str
     user_id: str | None = None
+    organization_id: str | None = None
+    tenant_scope: str
     action: str
     resource: str | None = None
     decision: str | None = None

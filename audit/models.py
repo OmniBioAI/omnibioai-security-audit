@@ -1,7 +1,8 @@
-from pydantic import BaseModel, Field
-from typing import Optional, Dict, Any
-from datetime import datetime
 import uuid
+from datetime import datetime
+from typing import Any, Literal
+
+from pydantic import BaseModel, Field, model_validator
 
 
 class AuditEvent(BaseModel):
@@ -14,12 +15,30 @@ class AuditEvent(BaseModel):
     service: str
     event_type: str   # auth, iam, policy, tes
 
-    user_id: Optional[str] = None
+    user_id: str | None = None
+    # First-class tenant provenance. This is intentionally separate from the
+    # arbitrary context object: context is never an authority for tenant
+    # isolation. Legacy payloads default to UNKNOWN, not GLOBAL.
+    organization_id: str | None = None
+    tenant_scope: Literal["organization", "global", "unknown"] = "unknown"
     action: str = ""
-    resource: Optional[str] = None
+    resource: str | None = None
 
-    decision: Optional[str] = None  # allow / deny / success / fail
-    reason: Optional[str] = None
+    decision: str | None = None  # allow / deny / success / fail
+    reason: str | None = None
 
-    trace_id: Optional[str] = None
-    context: Dict[str, Any] = {}
+    trace_id: str | None = None
+    context: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_tenant_scope(self) -> "AuditEvent":
+        # Supplying a first-class organization ID is itself an authoritative
+        # organization-scoped declaration. The explicit discriminator is
+        # still emitted so readers can distinguish legacy UNKNOWN from GLOBAL.
+        if self.organization_id is not None and self.tenant_scope == "unknown":
+            self.tenant_scope = "organization"
+        if self.tenant_scope == "organization" and self.organization_id is None:
+            raise ValueError("organization tenant scope requires organization_id")
+        if self.tenant_scope != "organization" and self.organization_id is not None:
+            raise ValueError("organization_id requires organization tenant scope")
+        return self

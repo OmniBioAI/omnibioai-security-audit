@@ -28,6 +28,8 @@ class Sink:
             service=event["service"],
             event_type=event["event_type"],
             user_id=event.get("user_id"),
+            organization_id=event.get("organization_id"),
+            tenant_scope=event.get("tenant_scope", "unknown"),
             action=event.get("action", ""),
             resource=event.get("resource"),
             decision=event.get("decision"),

@@ -1,4 +1,4 @@
-from sqlalchemy import JSON, Column, DateTime, String, Text
+from sqlalchemy import JSON, Column, DateTime, Index, String, Text
 from sqlalchemy.sql import func
 
 from db.base import Base
@@ -22,6 +22,10 @@ class AuditEventRecord(Base):
     service = Column(String(255), nullable=False)
     event_type = Column(String(255), nullable=False)
     user_id = Column(String(255), nullable=True)
+    organization_id = Column(String(255), nullable=True)
+    # Legacy rows and events without an authoritative tenant are UNKNOWN.
+    # GLOBAL is only valid when a producer explicitly declares it.
+    tenant_scope = Column(String(16), nullable=False, server_default="unknown")
     action = Column(String(255), nullable=False, default="")
     resource = Column(String(255), nullable=True)
     decision = Column(String(64), nullable=True)
@@ -37,3 +41,7 @@ class AuditEventRecord(Base):
     # new "no signature" rows read identically.
     integrity_status = Column(String(16), nullable=False, server_default="unsigned")
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        Index("ix_audit_events_org_timestamp_event", "organization_id", "timestamp", "event_id"),
+    )

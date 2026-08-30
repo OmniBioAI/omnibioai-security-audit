@@ -1,6 +1,8 @@
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
-from audit.context import trace_id_var, user_id_var, identity_var
+
+import pytest
+
+from audit.context import identity_var, trace_id_var, user_id_var
 
 
 @pytest.fixture(autouse=True)
@@ -224,6 +226,8 @@ async def test_audit_decorator_enriches_context_with_verified_identity():
             "verified": True,
         }
     }
+    assert event.organization_id == "7"
+    assert event.tenant_scope == "organization"
 
 
 @pytest.mark.asyncio

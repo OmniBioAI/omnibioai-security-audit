@@ -14,6 +14,7 @@ def _add(db_session, event_id, minutes_offset=0, **overrides):
         service=overrides.get("service", "auth"),
         event_type=overrides.get("event_type", "auth_login"),
         user_id=overrides.get("user_id", "u1"),
+        organization_id=overrides.get("organization_id"),
         action=overrides.get("action", "login"),
         resource=overrides.get("resource"),
         decision=overrides.get("decision", "success"),
@@ -38,6 +39,17 @@ def test_filters_by_user_id(db_session):
 
     rows, total = audit_query_service.list_audit_events(
         db_session, page=1, page_size=20, user_id="u1"
+    )
+    assert total == 1
+    assert [r.event_id for r in rows] == ["e1"]
+
+
+def test_filters_by_organization_id_without_authorizing_scope(db_session):
+    _add(db_session, "e1", organization_id="org-1")
+    _add(db_session, "e2", organization_id="org-2")
+    db_session.commit()
+    rows, total = audit_query_service.list_audit_events(
+        db_session, page=1, page_size=20, organization_id="org-1"
     )
     assert total == 1
     assert [r.event_id for r in rows] == ["e1"]

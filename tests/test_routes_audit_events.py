@@ -2,7 +2,7 @@
 tests via the audit_events_client fixture (real SQLite DB + real FastAPI
 dependency injection, not mocks); SQL-level filter/order/pagination
 correctness is covered separately in tests/test_audit_query_service.py."""
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import jwt
 
@@ -101,6 +101,7 @@ def test_response_contains_expected_fields(audit_events_client):
     item = body["items"][0]
     assert set(item.keys()) == {
         "event_id", "timestamp", "service", "event_type", "user_id",
+        "organization_id", "tenant_scope",
         "action", "resource", "decision", "reason", "trace_id", "context",
         "created_at", "integrity_status",
     }
@@ -226,6 +227,20 @@ def test_filter_by_integrity_status_via_query_param(audit_events_client):
     assert body["total"] == 1
     assert body["items"][0]["event_id"] == "e2"
     assert body["items"][0]["integrity_status"] == "invalid"
+
+
+def test_response_serializes_tenant_fields(audit_events_client):
+    client, sessions = audit_events_client
+    db = sessions()
+    db.add(AuditEventRecord(
+        event_id="org-event", timestamp=datetime(2026, 1, 1, tzinfo=timezone.utc), service="tes",
+        event_type="run", organization_id="org-7", tenant_scope="organization", context={},
+    ))
+    db.commit()
+    db.close()
+    item = client.get("/audit/events", headers=_auth_headers()).json()["items"][0]
+    assert item["organization_id"] == "org-7"
+    assert item["tenant_scope"] == "organization"
 
 
 # ---------------------------------------------------------------------------
