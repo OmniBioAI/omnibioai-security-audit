@@ -3,10 +3,10 @@
 ## Baseline
 
 SAT-2 was reconciled against Security Audit main at merge
-073e02377da5f05ba5aa2e9dc1b18e81ea09dcab. Producer branches were refreshed
+fdacfa7. Producer branches were refreshed
 against their current `origin/main` refs; TES and Workflow Bundles required a
 clean one-commit SAT-2 rebase, including Workflow Bundles current main
-`38334123218726cb5c21ce7bda7a415f3f9eb5cd`. That baseline contains SAT-1's
+`d24b24c`. That baseline contains SAT-1's
 first-class organization_id and tenant_scope
 fields, signed serialized event payloads, durable persistence, the nullable
 organization column, the unknown default, migration 0003_tenant_contract,
