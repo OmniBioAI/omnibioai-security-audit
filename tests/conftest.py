@@ -1,5 +1,6 @@
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 
 @pytest.fixture
@@ -40,8 +41,8 @@ def db_session():
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
 
-    from db.base import Base
     import db.models  # noqa: F401 -- registers AuditEventRecord on Base.metadata
+    from db.base import Base
 
     engine = create_engine(
         "sqlite:///:memory:", connect_args={"check_same_thread": False}
@@ -66,16 +67,16 @@ def audit_events_client(monkeypatch):
     Yields (TestClient, SessionLocal) so tests can seed rows directly via
     the same SessionLocal the app's dependency override uses.
     """
+    from fastapi.testclient import TestClient
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
     from sqlalchemy.pool import StaticPool
-    from fastapi.testclient import TestClient
 
-    from db.base import Base
     import db.models  # noqa: F401
-    from db.session import get_db
-    from audit import jwt_verify as jwt_verify_module
     from api.main import app
+    from audit import jwt_verify as jwt_verify_module
+    from db.base import Base
+    from db.session import get_db
 
     engine = create_engine(
         "sqlite:///:memory:",
@@ -88,6 +89,7 @@ def audit_events_client(monkeypatch):
     # SSO Phase 2 PR3: decoding now happens in audit.jwt_verify, not
     # api.deps -- api.deps no longer has its own JWT_SECRET to patch.
     monkeypatch.setattr(jwt_verify_module, "JWT_SECRET", "test-secret")
+    monkeypatch.setattr(jwt_verify_module._blacklist, "exists", lambda _key: 0)
 
     def override_get_db():
         db = TestingSessionLocal()

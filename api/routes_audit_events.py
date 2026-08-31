@@ -1,11 +1,19 @@
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, Query
+from fastapi.responses import JSONResponse
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from api.deps import require_platform_admin
+from audit.source_semantics import available_query_evidence, unavailable_query_evidence
 from db.session import get_db
-from schemas.audit import AuditEventListResponse
+from schemas.audit import (
+    AuditEventListResponse,
+    AuditEventOut,
+    FreshnessOut,
+    RetentionOut,
+)
 from services import audit_query_service
 
 # Deliberately a separate router/module from routes_audit.py (/health,
@@ -36,23 +44,39 @@ def list_audit_events(
     db: Session = Depends(get_db),  # noqa: B008 -- FastAPI's own documented dependency-injection pattern, not a mutable-default bug
     _admin: dict = Depends(require_platform_admin),  # noqa: B008 -- FastAPI's own documented dependency-injection pattern, not a mutable-default bug
 ) -> AuditEventListResponse:
-    rows, total = audit_query_service.list_audit_events(
-        db,
-        page=page,
-        page_size=page_size,
-        user_id=user_id,
-        service=service,
-        event_type=event_type,
-        decision=decision,
-        from_timestamp=from_timestamp,
-        to_timestamp=to_timestamp,
-        integrity_status=integrity_status,
-    )
+    try:
+        rows, total = audit_query_service.list_audit_events(
+            db, page=page, page_size=page_size, user_id=user_id, service=service,
+            event_type=event_type, decision=decision, from_timestamp=from_timestamp,
+            to_timestamp=to_timestamp, integrity_status=integrity_status,
+        )
+    except SQLAlchemyError:
+        evidence = unavailable_query_evidence()
+        return JSONResponse(status_code=503, content={
+            "error": "AUDIT_SOURCE_UNAVAILABLE", "source": "security_audit",
+            "source_availability": evidence.availability.value,
+            "generated_at": evidence.generated_at.isoformat(),
+            "source_checked_at": evidence.source_checked_at.isoformat(),
+            "warnings": list(evidence.warnings),
+        })
     total_pages = (total + page_size - 1) // page_size if total else 0
+    evidence = available_query_evidence()
+    items = []
+    for row in rows:
+        item = AuditEventOut.model_validate(row)
+        item.context = audit_query_service.project_safe_metadata(row)
+        items.append(item)
     return AuditEventListResponse(
-        items=rows,
+        source="security_audit",
+        items=items,
         total=total,
         page=page,
         page_size=page_size,
         total_pages=total_pages,
+        source_availability=evidence.availability,
+        generated_at=evidence.generated_at,
+        source_checked_at=evidence.source_checked_at,
+        freshness=FreshnessOut(status=evidence.freshness.status),
+        retention=RetentionOut(status=evidence.retention.status),
+        warnings=list(evidence.warnings),
     )
