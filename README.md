@@ -1,397 +1,184 @@
-# OmniBioAI Security Audit System
+# OmniBioAI Security Audit
 
-A high-performance, Redis Streams–based audit logging and event streaming system for the OmniBioAI ecosystem. It provides **zero-trust observability**, **HPC-safe audit trails**, and **real-time security event processing** across distributed services.
+The Security Audit service provides security-event ingestion, verification,
+durable persistence, and read-only query APIs. Redis Streams is the
+ingestion/backlog transport; SQL `audit_events` is the durable query store.
 
----
+## Purpose
 
-## Overview
-
-The audit system captures and streams security-relevant events from:
-
-* Authentication service
-* IAM client (token validation, cache hits/misses)
-* Policy engine (RBAC/ABAC decisions)
-* Workflow execution (TES, HPC jobs)
-* Control plane operations
-
-It is designed for:
-
-* Low-overhead, non-blocking event publication
-* Distributed microservices
-* HPC-scale workloads
-* Zero-trust architectures
-
----
+The service provides a tamper-evident, tenant-aware audit trail for events
+emitted by platform services such as the gateway, authentication, policy, TES,
+workflow, and control-plane components. It is designed for asynchronous
+ingestion, replayable delivery, durable storage, and safe administrative reads.
 
 ## Architecture
 
-```
-Services (Auth / IAM / Policy / TES)
-            │
-            ▼
-     Audit Logger (async)
-            │
-            ▼
-   Redis Streams (audit:events)
-            │
-    ┌───────┴────────┐
-    ▼                ▼
-Stream Consumers   Sink Layer (implemented today)
-(processors)       worker/main.py + consumers/sink.py write into a
-                    MySQL-backed store (db/models.py, Alembic-migrated)
-                    │
-                    ▼
-              GET /audit/events — platform-admin-gated query API
-              (see "API Endpoints" below)
+```mermaid
+flowchart LR
+    Producers[Authoritative service producers] -->|XADD data + sig| Stream[(Redis Stream audit:events)]
+    Stream --> Worker[Security Audit worker]
+    Worker --> Verify[Parse, verify integrity, classify tenant]
+    Verify --> SQL[(SQL audit_events)]
+    Caller[Control Center / Audit Explorer] --> Safe[GET /audit/events/safe]
+    Safe --> SQL
 ```
 
-A DB sink and a queryable read API already exist — "Future Sink Layer"
-in earlier revisions of this diagram undersold what's shipped; the
-Roadmap's remaining "OpenSearch / additional sink backends" item is
-about backends *beyond* MySQL, not the first one.
-
----
-
-## Authentication
-
-This service produces audit events; it does not authenticate end users
-itself. It has two touchpoints with the ecosystem's JWT identity layer,
-both delegating verification to a local copy of the same shared logic
-`omnibioai-control-center` uses (`audit/jwt_verify.py`, structurally
-identical to that repo's `core/jwt_verify.py` — see
-[omnibioai-auth's README](../omnibioai-auth#jwt) for the token model both
-verify against).
+Redis is the stream and worker backlog, not query history. The worker persists
+events idempotently by `event_id`; query services read SQL.
 
-### Platform admin authentication
-
-`api/deps.py::require_platform_admin` gates this service's own read APIs
-(audit query/search endpoints). It parses the `Authorization` header,
-delegates full verification to `jwt_verify.verify_token`, and then makes
-its own authorization decision: 401 if the token itself is invalid, 403
-if it's valid but lacks the `platform_admin` role. Audit records are
-platform-admin only — never exposed to organization admins — since they
-contain security-sensitive activity across the whole platform, not scoped
-to any one org. Unlike `omnibioai-auth`, this service has no database
-access to resolve a *permission* from a role name, so it checks for the
-literal seeded `platform_admin` role, the same pattern
-`omnibioai-control-center`'s `require_admin` uses for `admin`.
+## Event lifecycle
 
-A second, non-HTTP touchpoint exists for audit producers running
-in-process rather than behind a FastAPI request: `audit/identity.py::validate_identity_token`
-verifies a caller-supplied access token (also via `jwt_verify.verify_token`)
-before attributing an audit event to that identity — never raises, a
-verification failure just means the event is logged without a verified
-identity rather than blocking the caller's request. This is what stops an
-in-process caller from attributing an audit event to an arbitrary,
-unverified `user_id` string.
+1. A producer creates the event envelope, including authoritative tenant fields
+   when available.
+2. The producer publishes the exact JSON `data` string and optional `sig` to
+   Redis Stream `audit:events`.
+3. The worker parses the event, verifies the signature over the exact
+   transmitted string, classifies integrity, and writes the durable row.
+4. Read APIs query SQL. Filtering, counting, ordering, and pagination happen in
+   SQL before the response is returned.
 
-### Shared JWT verification
+## Tenant model
 
-`audit/jwt_verify.py::verify_token` is the single place in this repo that
-fully verifies a token — signature, expiry, token type (rejects a
-presented refresh token), the required `sub` claim, and Redis
-jti-blacklist revocation. Both `require_platform_admin` and
-`validate_identity_token` delegate to it rather than each doing their own
-partial decode, which is exactly the gap this module closed (see the
-module's own docstring for the history).
-
-### Redis blacklist
-
-The same jti-blacklist `omnibioai-auth` writes to on logout
-(`blacklist:jti:{jti}`) is checked here directly against the same Redis
-instance (`AuditConfig.REDIS_URL`) — **fail-open** on a Redis error,
-deliberately matching auth-service's own documented tradeoff: a Redis
-blip must not 401 every platform-admin request in this service either.
-
-### HS256 compatibility
-
-HS256 — the production default everywhere in the ecosystem today — is
-fully supported and unaffected by RS256 readiness below: an HS256 token's
-own `alg` header routes it straight to the existing shared-secret
-verification path, exactly as before.
-
-### RS256 compatibility
-
-`jwt_verify.py` also verifies RS256 tokens against `omnibioai-auth`'s
-`GET /.well-known/jwks.json`, dispatched by each token's own `alg` header
-rather than by local configuration — so this service is ready to verify
-RS256 tokens the moment `omnibioai-auth` is switched to issue them,
-without a corresponding deploy here. The JWKS client is a cached,
-auto-refreshing lookup by `kid` (refreshes once on an unknown `kid`, e.g.
-after key rotation); any signature or JWKS-fetch failure fails closed —
-there is no path that accepts a token without a verified signature. No
-production deployment has switched issuance to RS256 yet — see the
-[ecosystem root README](../omnibioai#deployment-notes)'s Deployment Notes.
-
----
-
-## Key Features
-
-### 🚀 High Performance
-
-* Async non-blocking logging
-* Redis Streams backbone
-* Minimal overhead on critical paths
-
-### 🔐 Zero Trust Observability
-
-* Every decision is logged
-* Full traceability of:
-
-  * user actions
-  * policy decisions
-  * system events
-
-### 🧬 HPC-Aware Design
-
-* Safe for large-scale distributed compute
-* Designed for workflow engines like TES
-* Handles thousands of concurrent events
-
-### 📡 Real-time Streaming
-
-* Redis Streams allow replayable audit logs
-* Consumer pipeline ready for scaling
-
----
-
-## Event Types
-
-Examples of events tracked (the event type is extensible):
-
-* `auth_login`
-* `auth_failed`
-* `iam_cache_hit`
-* `iam_cache_miss`
-* `policy_decision`
-* `tes_submit`
-* `tes_complete`
-
----
-
-## Running
-
-### Via OmniBioAI Studio (recommended)
-
-```bash
-cd ~/Desktop/machine/omnibioai-studio
-docker compose up -d security-audit
-```
-
-Access (internal only):
-`http://security-audit:8004` (Docker internal network)
-
-### Health check
-
-```bash
-curl http://localhost:8004/health
-# {"status": "ok"}
-```
-
-### API Endpoints
-
-| Endpoint | Method | Auth | Description |
-|----------|--------|------|-------------|
-| `/health` | GET | — | Health check |
-| `/audit/test` | GET | none today | Write-side ingestion smoke test |
-| `/audit/events` | GET | `platform_admin` role | Query audit events — `page`/`page_size`, plus optional `user_id`/`service`/`event_type`/`decision`/`integrity_status`/`from_timestamp`/`to_timestamp` filters |
-
-`/audit/events` is deliberately a separate router from `/audit/test` —
-the former is the platform-admin-gated read API (see "Platform admin
-authentication" above), the latter has no auth at all today.
-
-### Environment variables
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `REDIS_URL` | `redis://localhost:6379` | Redis Streams backend |
-| `AUDIT_STREAM` | `audit:events` | Stream name |
-| `SERVICE_NAME` | `unknown-service` | Service identifier included in emitted events |
-| `AUDIT_MAXLEN` | `1000000` | Max stream length |
-| `AUDIT_DATABASE_URL` | `mysql+pymysql://root:root@localhost:3306/omnibioai_audit` | Durable audit-event store the consumer writes into and `/audit/events` queries |
-| `AUDIT_CONSUMER_GROUP` | `audit-workers` | Redis Streams consumer group name |
-| `AUDIT_CONSUMER_NAME` | `worker-{pid}` | Per-process consumer identity within the group |
-| `AUDIT_PEL_MIN_IDLE_MS` | `30000` | How long a delivered-but-unacked message must sit idle before any worker (this one or another replica) may reclaim it — see `worker/main.py::sweep_pending` |
-| `AUDIT_PEL_MAX_DELIVERIES` | `5` | Delivery attempts (original + reclaims) before an entry is treated as poison and ACKed without further processing |
-| `AUDIT_PEL_SWEEP_BATCH` | `100` | Max stale Pending Entries List entries inspected per sweep |
-| `JWT_SECRET` | `change-me` *(development only)* | HS256 signing/verification secret; production must set the value used by `omnibioai-auth` |
-| `IAM_URL` | `http://omnibioai-auth:8000` | Auth service URL used for RS256/JWKS verification |
-
-`JWT_SECRET=change-me` is for development only. Production deployments
-must provide a secure secret consistent with the authentication service's
-HS256 signing configuration. Invalid or missing tokens return `401`; valid
-tokens without the literal `platform_admin` role return `403` for the audit
-query API.
-
----
-
-## Usage
-
-### Initialize Logger
-
-```python
-from audit.logger import AuditLogger
-from audit.models import AuditEvent
-from audit.config import AuditConfig
-
-logger = AuditLogger()
-```
-
----
-
-### Log an Event
-
-```python
-await logger.log(
-    AuditEvent(
-        service="auth-service",
-        event_type="auth_login",
-        user_id="user_123",
-        action="login",
-        decision="success",
-    )
-)
-```
-
----
-
-## FastAPI Integration
-
-```python
-from fastapi import APIRouter
-from audit.logger import AuditLogger
-
-router = APIRouter()
-logger = AuditLogger()
-
-@router.post("/login")
-async def login():
-    await logger.log(...)
-```
-
----
-
-## Stream Consumer
-
-Read audit events:
-
-```python
-from consumers.stream_reader import StreamReader
-
-reader = StreamReader()
-
-data = reader.read()
-print(data)
-```
-
-### Run the worker locally
-
-The durable consumer runs separately from the FastAPI application:
-
-```bash
-python -m worker.main
-```
-
-It creates the configured Redis consumer group, reads new events, persists
-them to MySQL, acknowledges successfully handled messages, and reclaims
-stale Pending Entries List messages. Configure `REDIS_URL` and
-`AUDIT_DATABASE_URL` before starting it.
-
----
-
-## Consumer Pipeline
-
-You can extend consumers for:
-
-* anomaly detection
-* security alerts
-* analytics dashboards
-* compliance reporting
-
----
+`organization_id` is a first-class nullable event field and is covered by the
+signed event payload. `tenant_scope` is one of:
+
+| Value | Meaning |
+|---|---|
+| `organization` | An authoritative organization ID is present. |
+| `global` | The producer explicitly declared a platform-wide event. |
+| `unknown` | No authoritative tenant scope is available, including legacy rows. |
+
+Null `organization_id` does not mean global. Organization callers can see only
+rows with their verified organization ID and `tenant_scope=organization`.
+GLOBAL and UNKNOWN rows are excluded from organization-scoped safe reads.
+
+## Signing/integrity
+
+The v1 HMAC-SHA256 signature is domain-separated and binds the producer
+service, version, and exact Redis `data` string. The worker classifies each
+row as `valid`, `invalid`, or `unsigned`; legacy and currently unsigned events
+remain explicitly unverified evidence.
+
+## Durable storage
+
+Migration `0001_audit_events` created the SQL table and
+`0002_integrity_status` added integrity classification. Migration
+`0003_tenant_contract` added nullable `organization_id`, non-null
+`tenant_scope` (default `unknown`), and the
+`(organization_id, timestamp, event_id)` index. `event_id` is the primary key,
+making worker redelivery safe and idempotent.
+
+## Query APIs
+
+| Endpoint | Method | Authorization | Description |
+|---|---|---|---|
+| `/health` | GET | None | Service health |
+| `/audit/test` | GET | None today | Ingestion smoke test |
+| `/audit/events` | GET | Verified `platform_admin` | Legacy/full platform query |
+| `/audit/events/safe` | GET | Verified `manage_all_orgs` or `org_admin` with verified `org_id` | Tenant-safe query |
+
+The legacy full query remains platform-wide. The safe API is the contract for
+browser-facing or tenant-scoped consumption.
+
+## Safe Query API
+
+`GET /audit/events/safe` supports bounded pagination and filters for user,
+service, event type, decision, timestamp range, integrity status, and (for a
+platform-wide caller) organization ID. The effective caller scope is derived
+from the verified token; a caller-supplied organization ID cannot widen it.
+
+Platform-wide callers require `manage_all_orgs`. Organization callers require
+`org_admin` plus a verified `org_id`; they cannot request another organization.
+Tenant filtering occurs before SQL count, ordering, and pagination.
+
+## Authorization model
+
+The service verifies the bearer token, returns 401 for invalid or missing
+identity, and returns 403 for a valid token without the required permission or
+organization role/scope. The browser is never trusted to establish tenant
+scope. The server derives effective scope from verified identity claims.
+
+## Metadata/redaction
+
+The safe response returns only the allowlisted metadata keys `trace_id`,
+`request_id`, `workflow_id`, `run_id`, `resource_type`, `resource_id`, and
+`backend`. Full context, credentials, tokens, and unbounded producer metadata
+are not exposed by the safe projection.
+
+## Source availability
+
+The safe response reports durable-query evidence independently from ingestion
+health:
+
+| State | Meaning |
+|---|---|
+| `AVAILABLE` | The durable SQL query completed, including an empty result. |
+| `UNAVAILABLE` | The durable query failed; the endpoint returns normalized 503 `AUDIT_SOURCE_UNAVAILABLE`. |
+| `PARTIAL` | Reserved for an explicitly partial source contract; not inferred from missing evidence. |
+| `UNKNOWN` | No authoritative availability evidence; not treated as healthy. |
+
+## Freshness/retention semantics
+
+The safe API currently reports `freshness=UNKNOWN`, `retention=UNKNOWN`, and
+`ingestion_lag_seconds=null`. It does not claim CURRENT freshness, a retention
+duration, or measured ingestion lag. Redis `AUDIT_MAXLEN` is a stream backlog
+cap, not durable SQL retention. A successful SQL read is not evidence that all
+producers are current.
+
+## Migration state
+
+The merged architecture is represented through Alembic revisions
+`0001_audit_events` → `0002_integrity_status` → `0003_tenant_contract`.
+Existing rows remain compatible: rows without authoritative tenant data are
+`tenant_scope=unknown`, and rows without a signature are `unsigned`.
+
+## Security properties
+
+- Tenant scope is server-derived and signed tenant data is integrity-bound.
+- Organization safe reads exclude GLOBAL and UNKNOWN events.
+- SQL tenant filtering precedes count, order, and pagination.
+- Safe metadata is allowlisted and integrity is normalized.
+- Query access is read-only; no audit update or delete API exists.
+- Durable query failure is surfaced safely as 503 without database details.
+- Worker persistence is idempotent by event ID.
 
 ## Testing
 
-```bash
-cd ~/Desktop/machine/omnibioai-security-audit
-pytest tests/ -v --cov=.
+The repository tests signing, integrity classification, event contracts, tenant
+authorization and filtering, safe metadata, source semantics, migrations, SQL
+persistence, stream processing, and worker recovery. Run:
 
-# Covers the audit logger, stream reader, decorators, context management,
-# event types, API routes, and worker behavior. Review the measured coverage
-# output rather than relying on a fixed percentage claim.
+```bash
+pytest -q
 ```
 
----
+## Current implementation status
 
-## Design Principles
+SAT-1 and SAT-3/SAT-4 are merged in the current main architecture: the tenant
+contract and durable SQL persistence are implemented; tenant-safe query,
+verified authorization, normalized integrity, safe metadata, source evidence,
+and conservative freshness/retention semantics are implemented. SAT-2
+producer propagation is closed for the confirmed producer set described below.
 
-### 1. Never block core execution
+## Known limitations
 
-Audit failure must NOT break system flow.
+- Legacy events remain UNKNOWN tenant scope and unsigned integrity evidence.
+- The safe API does not establish durable retention or freshness duration.
+- Source availability describes the SQL query, not complete ecosystem ingestion.
+- Producer coverage and live evidence vary by service and deployment; TES and
+  Workflow Bundles have fixture-limited live evidence.
+- Additional sinks, alerting, and operational retention policy are outside
+  this merged query contract.
 
-### 2. Append-only logs
+## SAT-2 producer rollout status
 
-Redis Streams provide append-only event delivery, while the MySQL sink is the
-durable source of truth for retained audit history.
+SAT-2 propagation is complete for the confirmed Security Audit producers:
+Gateway, RAG, LIMS, TES, and Workflow Bundles. Gateway, RAG, and LIMS have
+live durable evidence; TES and Workflow Bundles are code/test complete but
+their available live operations did not produce a harmless audited fixture.
 
-### 3. Distributed-first
-
-Works across:
-
-* local dev
-* HPC clusters
-* cloud microservices
-
-### 4. Traceability-first design
-
-Every event supports:
-
-* trace_id
-* user_id
-* service context
-
----
-
-## Integration with OmniBioAI Ecosystem
-
-This service integrates with:
-
-* omnibioai-auth
-* omnibioai-iam-client
-* omnibioai-policy-engine
-
----
-
-## Roadmap
-
-| Feature | Status |
-|---------|--------|
-| Redis Streams audit backbone | ✓ Stable |
-| Async non-blocking logging | ✓ Stable |
-| Fail-open design | ✓ Stable |
-| Distributed trace ID support | ✓ Stable |
-| Broad automated test coverage | ✓ Stable |
-| MySQL sink + queryable read API (`worker/`, `db/`, `/audit/events`) | ✓ Stable |
-| OpenSearch / additional sink backends | Planned |
-| Real-time security dashboard | Planned |
-| AI-based anomaly detection | Planned v0.5 |
-| Compliance reporting engine | Planned v0.5 |
-
----
-
-## Related Services
-
-| Service | Role |
-|---------|------|
-| `omnibioai-api-gateway` | Fires audit events on every request |
-| `omnibioai-auth` | Fires auth_login / auth_failed events |
-| `omnibioai-policy-engine` | Fires policy_decision events |
-| `omnibioai-iam-client` | Fires iam_cache_hit / iam_cache_miss events |
-| `omnibioai-security-sdk` | Provides fire_audit() helper used by all services |
-| `omnibioai-studio` | Manages security-audit container lifecycle |
-
----
-
-## License
-
-Apache 2.0
+Model Registry is not a confirmed Security Audit producer and is out of scope
+until an approved stream path exists. The generic Security SDK is not adopted
+by the discovered producers; SDK adoption remains future work. No SAT-2
+producer was added for GLOBAL events, so GLOBAL visibility must not be inferred
+from the current evidence.
