@@ -97,7 +97,11 @@ def test_response_contains_expected_fields(audit_events_client):
     resp = client.get("/audit/events", headers=_auth_headers())
 
     body = resp.json()
-    assert set(body.keys()) == {"items", "total", "page", "page_size", "total_pages"}
+    assert set(body.keys()) == {
+        "source", "items", "total", "page", "page_size", "total_pages",
+        "source_availability", "generated_at", "source_checked_at",
+        "freshness", "retention", "warnings",
+    }
     item = body["items"][0]
     assert set(item.keys()) == {
         "event_id", "timestamp", "service", "event_type", "user_id",
@@ -106,7 +110,7 @@ def test_response_contains_expected_fields(audit_events_client):
         "created_at", "integrity_status",
     }
     assert item["event_id"] == "evt-0"
-    assert item["context"] == {"i": 0}
+    assert item["context"] == {}
     # _seed() rows are constructed without an explicit integrity_status --
     # the DB column's own server_default="unsigned" (0002_integrity_status)
     # applies, same as every real historical event before any producer
