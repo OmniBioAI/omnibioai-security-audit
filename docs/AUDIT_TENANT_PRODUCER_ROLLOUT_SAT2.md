@@ -3,7 +3,10 @@
 ## Baseline
 
 SAT-2 was reconciled against Security Audit main at merge
-073e02377da5f05ba5aa2e9dc1b18e81ea09dcab. That baseline contains SAT-1's
+073e02377da5f05ba5aa2e9dc1b18e81ea09dcab. Producer branches were refreshed
+against their current `origin/main` refs; TES and Workflow Bundles required a
+clean one-commit SAT-2 rebase, including Workflow Bundles current main
+`38334123218726cb5c21ce7bda7a415f3f9eb5cd`. That baseline contains SAT-1's
 first-class organization_id and tenant_scope
 fields, signed serialized event payloads, durable persistence, the nullable
 organization column, the unknown default, migration 0003_tenant_contract,
@@ -103,13 +106,17 @@ exposed in the evidence collection.
 
 Each changed producer has focused contract coverage for top-level tenant
 fields, context non-authority, unknown defaults, and signing serialization.
-Current focused results: Gateway 25 passed; TES signing 16 passed; RAG audit
-9 passed; Workflow Bundles signing 15 passed; LIMS signed-audit 45 passed.
+Current focused results on the reconciled branches: Gateway 25 passed; TES
+signing 16 passed with the worktree source explicitly selected; RAG audit 9
+passed; Workflow Bundles signing 15 passed; LIMS signed-audit 45 passed.
 Gateway's stale pre-SAT-2 envelope assertion was updated to the merged
-contract. TES route-isolation tests collected 15 environment-skipped cases.
-Full TES/Workflow suites were not used as release gates because they enter
-long-running backend/integration paths. Changed-file compilation and diff
-checks pass when bytecode is redirected outside the read-only worktrees.
+contract. Workflow Bundles run-isolation tests collected 16
+environment-skipped cases. Full TES/Workflow suites were not used as release
+gates because they enter long-running backend/integration paths. RAG's focused
+test file passes with coverage collection disabled; its repository-wide
+98%-coverage threshold is not a valid gate for that nine-test slice and is
+reported separately. Changed-file compilation and diff checks pass when
+bytecode/cache output is redirected outside the read-only worktrees.
 Ruff passes for RAG and LIMS; touched Gateway, TES, and Workflow files retain
 pre-existing lint debt, with no broad cleanup performed.
 
