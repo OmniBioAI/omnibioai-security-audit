@@ -6,7 +6,10 @@ PR2 additions (bottom of file): integrity_status classification -- signed
 valid/invalid events and unsigned (today's only real traffic shape) all
 persist and ACK; only "invalid" gets the distinct observability print."""
 import json
+import runpy
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 import worker.main as worker
 from audit.signing import sign_audit_event
@@ -232,6 +235,35 @@ def test_run_does_not_swallow_keyboard_interrupt():
             raised = True
 
     assert raised is True
+
+
+# ---------------------------------------------------------------------------
+# __main__ guard (never reached by simply `import worker.main`, so a plain
+# `worker.run()` call site -- as every test above uses -- can never cover
+# it). Executed via runpy.run_path so the module's own top-level `if
+# __name__ == "__main__":` block actually runs under run_name="__main__",
+# rather than just importing it as a library module again.
+#
+# Patches consumers.stream_reader.StreamReader (the class's own defining
+# module), not worker.main.StreamReader: run_path re-executes worker/
+# main.py's `from consumers.stream_reader import StreamReader` line fresh,
+# in a brand-new namespace, so a patch on the already-imported worker.main
+# module's attribute would never be consulted -- the fresh import instead
+# re-reads whatever consumers.stream_reader.StreamReader resolves to at
+# that moment, which is exactly what's patched here.
+# ---------------------------------------------------------------------------
+
+def test_dunder_main_starts_worker_and_exits_cleanly_on_keyboard_interrupt(capsys):
+    mock_reader = MagicMock()
+    mock_reader.ensure_group.side_effect = KeyboardInterrupt
+
+    with patch("consumers.stream_reader.StreamReader", return_value=mock_reader), \
+         pytest.raises(SystemExit) as exc_info:
+        runpy.run_path(worker.__file__, run_name="__main__")
+
+    assert exc_info.value.code == 0
+    captured = capsys.readouterr()
+    assert "[WORKER] starting audit consumer" in captured.out
 
 
 # ---------------------------------------------------------------------------

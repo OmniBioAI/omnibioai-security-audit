@@ -50,6 +50,23 @@ def test_global_and_unknown_are_distinct():
     assert unknown_event.tenant_scope == "unknown"
 
 
+def test_organization_id_alone_promotes_scope_to_organization():
+    """A first-class organization_id is itself an authoritative
+    organization-scoped declaration -- tenant_scope need not be passed
+    explicitly and is auto-promoted from its "unknown" default."""
+    event = AuditEvent(service="svc", event_type="test", organization_id="org-1")
+    assert event.tenant_scope == "organization"
+
+
+def test_organization_id_with_explicit_non_organization_scope_is_rejected():
+    from pydantic import ValidationError
+    with pytest.raises(ValidationError):
+        AuditEvent(
+            service="svc", event_type="test",
+            organization_id="org-1", tenant_scope="global",
+        )
+
+
 def test_explicitly_supplied_timestamp_is_respected():
     fixed = datetime(2024, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
     event = AuditEvent(service="svc", event_type="test", timestamp=fixed)

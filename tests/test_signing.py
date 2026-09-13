@@ -221,6 +221,39 @@ def test_signature_format_has_version_prefix():
     int(mac_hex, 16)  # must actually be hex
 
 
+def test_verify_rejects_falsy_or_non_string_service_with_otherwise_valid_signature():
+    """Distinct from test_verify_never_raises_on_adversarial_input's
+    garbage_inputs, which pair an invalid service with a falsy/wrong-type
+    signature -- that only ever exercises the earlier `signature` guard.
+    Pairing an invalid service with a real, well-formed signature is
+    needed to actually reach the `service` guard itself."""
+    sig = sign_audit_event(SERVICE, DATA, SECRET)
+    assert verify_audit_event("", DATA, sig, SECRET) is False
+    assert verify_audit_event(None, DATA, sig, SECRET) is False
+    assert verify_audit_event(123, DATA, sig, SECRET) is False
+
+
+def test_verify_rejects_none_data_with_otherwise_valid_service_and_signature():
+    sig = sign_audit_event(SERVICE, DATA, SECRET)
+    assert verify_audit_event(SERVICE, None, sig, SECRET) is False
+
+
+def test_verify_never_raises_when_secret_cannot_be_stringified():
+    """The fail-closed `except Exception: return False` at the bottom of
+    verify_audit_event exists for truly unexpected failures, not just the
+    validated guard conditions above it -- e.g. a `secret` whose own
+    string conversion raises. Every argument here is otherwise
+    well-formed (real service, real data, real signature) so only that
+    final except clause can be what turns this into False."""
+
+    class ExplodingSecret:
+        def __format__(self, _spec):
+            raise RuntimeError("boom")
+
+    sig = sign_audit_event(SERVICE, DATA, SECRET)
+    assert verify_audit_event(SERVICE, DATA, sig, ExplodingSecret()) is False
+
+
 def test_verify_never_raises_on_adversarial_input():
     """Every field in a real consumer's future call to verify_audit_event
     (PR2+) comes off a Redis stream any network peer can XADD to -- this

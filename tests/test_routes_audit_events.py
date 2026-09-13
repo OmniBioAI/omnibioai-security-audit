@@ -3,9 +3,12 @@ tests via the audit_events_client fixture (real SQLite DB + real FastAPI
 dependency injection, not mocks); SQL-level filter/order/pagination
 correctness is covered separately in tests/test_audit_query_service.py."""
 from datetime import datetime, timedelta, timezone
+from unittest.mock import patch
 
 import jwt
+from sqlalchemy.exc import OperationalError
 
+from api.routes_audit_events import list_audit_events
 from db.models import AuditEventRecord
 
 SECRET = "test-secret"
@@ -256,3 +259,28 @@ def test_health_endpoint_still_works(audit_events_client):
     resp = client.get("/health")
     assert resp.status_code == 200
     assert resp.json() == {"status": "ok"}
+
+
+# ---------------------------------------------------------------------------
+# Database failure (mirrors test_routes_audit_safe.py's
+# test_safe_database_failure_is_normalized_without_internal_details for the
+# structurally identical branch in this route)
+# ---------------------------------------------------------------------------
+
+def test_database_failure_is_normalized_without_internal_details():
+    with patch(
+        "api.routes_audit_events.audit_query_service.list_audit_events",
+        side_effect=OperationalError("SELECT audit_events", {}, Exception("db.internal")),
+    ):
+        response = list_audit_events(
+            page=1, page_size=20, user_id=None, service=None, event_type=None,
+            decision=None, from_timestamp=None, to_timestamp=None,
+            integrity_status=None, db=object(),
+            _admin={"sub": "1", "roles": ["platform_admin"]},
+        )
+
+    assert response.status_code == 503
+    body = response.body.decode()
+    assert "AUDIT_SOURCE_UNAVAILABLE" in body
+    assert "SELECT" not in body
+    assert "db.internal" not in body

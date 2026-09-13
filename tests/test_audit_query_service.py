@@ -230,3 +230,51 @@ def test_pagination_total_unaffected_by_page_size(db_session):
     rows, total = audit_query_service.list_audit_events(db_session, page=1, page_size=3)
     assert len(rows) == 3
     assert total == 7
+
+
+# ---------------------------------------------------------------------------
+# list_safe_audit_events -- HTTP-level tests (test_routes_audit_safe.py)
+# only ever exercise this with a bare organization_id/user_id-less call, so
+# the platform_wide+organization_id filter and the remaining per-column/
+# timestamp filters were never reached at the service layer.
+# ---------------------------------------------------------------------------
+
+def test_safe_platform_wide_with_explicit_organization_id_filters(db_session):
+    _add(db_session, "e1", organization_id="org-1")
+    _add(db_session, "e2", organization_id="org-2")
+    db_session.commit()
+
+    rows, total = audit_query_service.list_safe_audit_events(
+        db_session, page=1, page_size=20, organization_id="org-1", platform_wide=True,
+    )
+    assert total == 1
+    assert rows[0].event_id == "e1"
+
+
+def test_safe_column_filters(db_session):
+    _add(db_session, "e1", user_id="u1", service="auth", event_type="auth_login", decision="success")
+    _add(db_session, "e2", user_id="u2", service="policy", event_type="policy_decision", decision="deny")
+    db_session.commit()
+
+    rows, total = audit_query_service.list_safe_audit_events(
+        db_session, page=1, page_size=20, organization_id=None, platform_wide=True,
+        user_id="u1", service="auth", event_type="auth_login", decision="success",
+        integrity_status="unsigned",
+    )
+    assert total == 1
+    assert rows[0].event_id == "e1"
+
+
+def test_safe_timestamp_range_filters(db_session):
+    _add(db_session, "e1", minutes_offset=0)
+    _add(db_session, "e2", minutes_offset=10)
+    _add(db_session, "e3", minutes_offset=20)
+    db_session.commit()
+
+    rows, total = audit_query_service.list_safe_audit_events(
+        db_session, page=1, page_size=20, organization_id=None, platform_wide=True,
+        from_timestamp=datetime(2026, 1, 1, 12, 5, 0),  # noqa: DTZ001 -- matches the naive AuditEventRecord.timestamp column being filtered
+        to_timestamp=datetime(2026, 1, 1, 12, 15, 0),  # noqa: DTZ001 -- matches the naive AuditEventRecord.timestamp column being filtered
+    )
+    assert total == 1
+    assert rows[0].event_id == "e2"

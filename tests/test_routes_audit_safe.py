@@ -78,6 +78,19 @@ def test_safe_auth_failures_and_validation(audit_events_client):
     assert client.get("/audit/events/safe", headers=_headers(permissions=["manage_all_orgs"]), params={"page_size": 101}).status_code == 422
 
 
+def test_from_timestamp_after_to_timestamp_returns_422(audit_events_client):
+    client, _ = audit_events_client
+    response = client.get(
+        "/audit/events/safe",
+        headers=_headers(permissions=["manage_all_orgs"]),
+        params={
+            "from_timestamp": "2026-01-02T00:00:00",
+            "to_timestamp": "2026-01-01T00:00:00",
+        },
+    )
+    assert response.status_code == 422
+
+
 def test_safe_database_failure_is_normalized_without_internal_details():
     with patch(
         "api.routes_audit_safe.audit_query_service.list_safe_audit_events",
