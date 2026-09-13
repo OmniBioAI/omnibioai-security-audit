@@ -5,7 +5,7 @@ from api.routes_audit_events import router as audit_events_router
 from api.routes_audit_safe import router as audit_safe_router
 from audit.config import AuditConfig
 
-app = FastAPI(title=f"OmniBioAI Security Audit — {AuditConfig.SERVICE_NAME}")
+app = FastAPI(title=f"OmniBioAI Security Audit — {AuditConfig.SERVICE_NAME}", root_path="/_svc/audit")
 
 app.include_router(router)
 app.include_router(audit_events_router)
