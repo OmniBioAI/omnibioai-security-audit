@@ -13,6 +13,7 @@ from sqlalchemy.exc import IntegrityError
 
 from audit.config import AuditConfig
 from audit.record_integrity import compute_quarantine_record_hash
+from audit.security_alerts import emit_security_alert
 from db.models import QuarantinedAuditEvent
 
 
@@ -97,4 +98,23 @@ class QuarantineSink:
             # XACK) -- durable evidence already exists, safe to proceed
             # to ack.
             self.db_session.rollback()
+
+        # Track E4: fire-and-forget observability only -- called AFTER the
+        # durable quarantine write (or its idempotent-duplicate rollback)
+        # has already committed, never gating it. Deduped by
+        # emit_security_alert() itself, so a burst of poison events in a
+        # short window becomes one alert, not a storm. metadata is limited
+        # to the same safe fields classify_poison_reason() already
+        # produces -- no raw_data/raw_signature, ever.
+        emit_security_alert(
+            condition="poison_event_quarantined",
+            severity="warning",
+            component="audit-worker",
+            message="A stream event was quarantined instead of persisted as canonical audit evidence",
+            metadata={
+                "failure_category": failure_category,
+                "service": service,
+                "delivery_attempts": delivery_attempts,
+            },
+        )
         return True

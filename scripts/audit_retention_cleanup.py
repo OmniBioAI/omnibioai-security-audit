@@ -54,6 +54,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from sqlalchemy import create_engine, text
 
+from audit.security_alerts import emit_security_alert
+
 _TABLES = (
     ("audit_events", "event_id", "timestamp"),
     ("quarantined_audit_events", "stream_message_id", "quarantined_at"),
@@ -206,6 +208,19 @@ def main(argv: list[str] | None = None) -> int:
     _write_status_file(mode, overall_ok, results)
 
     if not overall_ok:
+        # Track E4: a failed/partial retention run is a security-relevant
+        # operational condition (could mean legal-hold enforcement or the
+        # audit_maintenance credential itself is misbehaving) -- surface it
+        # through the same alert channel as integrity-verification failures,
+        # not just this script's own exit code.
+        failed_tables = [t for t, r in results.items() if r.get("status") == "failed"]
+        emit_security_alert(
+            condition="retention_cleanup_failed",
+            severity="critical" if failed_tables else "warning",
+            component="retention-cleanup",
+            message="Audit retention cleanup completed with partial or failed results",
+            metadata={"mode": mode, "results": {t: r.get("status") for t, r in results.items()}},
+        )
         print("[FAIL] retention run completed with partial/failed results -- see above", file=sys.stderr)
         return 1
 

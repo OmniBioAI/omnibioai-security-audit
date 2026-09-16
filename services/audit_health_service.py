@@ -21,6 +21,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from audit.config import AuditConfig
+from audit.security_alerts import emit_security_alert
 from db.models import AuditEventRecord, QuarantinedAuditEvent
 
 
@@ -204,10 +205,109 @@ def get_retention_integrity_health() -> RetentionIntegrityHealth:
     )
 
 
+def _int_env(name: str) -> int | None:
+    """Opt-in alert threshold -- same "no invented default" discipline as
+    AUDIT_RETENTION_DAYS: what counts as an "abnormal" backlog/quarantine
+    count is an operational tuning decision this codebase does not invent
+    a universal number for. Unset or unparseable => that specific
+    threshold-based alert is simply not evaluated, never a guessed value."""
+    v = os.environ.get(name)
+    if not v:
+        return None
+    try:
+        return int(v)
+    except ValueError:
+        return None
+
+
+def _evaluate_health_alerts(redis: RedisPipelineHealth, persistence: PersistencePipelineHealth) -> None:
+    """Track E4 (breadth pass): fire-and-forget observability only,
+    called AFTER redis/persistence health has already been fully computed
+    by get_redis_pipeline_health()/get_persistence_pipeline_health() --
+    this function's entire body is wrapped in a blanket try/except and its
+    return value is discarded, so nothing it does can alter, delay, or
+    fail the health response those two functions already produced. This
+    is a GET-route observability path; it has no interaction with the
+    worker's ACK/quarantine/durability decisions at all, by construction
+    (different call graph entirely -- see consumers/quarantine.py for
+    where quarantine alerting actually lives, on the write path).
+
+    Threshold-based conditions (PEL backlog/age, worker stall, quarantine
+    count) are opt-in via env vars and silently skipped if unconfigured --
+    never fabricated with an invented "reasonable-sounding" default.
+    Boolean/structural conditions (redis unavailable, audit DB
+    unavailable) are always evaluated since they're already-computed
+    facts, not judgment calls.
+    """
+    try:
+        if not redis.available:
+            emit_security_alert(
+                condition="redis_stream_unavailable", severity="critical", component="audit-delivery",
+                message="Redis Streams pipeline is unavailable", metadata={"error": redis.error},
+            )
+        elif redis.active_consumer_count == 0:
+            # Distinct from "worker stalled" below: this means no consumer
+            # identity has ever registered in the group at all (a fresh
+            # deployment before the worker's first read, or every consumer
+            # was explicitly removed) -- NOT the same as "a worker
+            # registered once and then stopped," which XINFO CONSUMERS
+            # would still list (with a growing idle time), hence the
+            # separate stall check.
+            emit_security_alert(
+                condition="audit_worker_never_registered", severity="critical", component="audit-worker",
+                message="No consumer has ever registered in the audit worker consumer group",
+                metadata={"stream_length": redis.stream_length},
+            )
+
+        pel_pending_threshold = _int_env("AUDIT_ALERT_PEL_PENDING_THRESHOLD")
+        pel_age_threshold = _int_env("AUDIT_ALERT_PEL_AGE_THRESHOLD_SECONDS")
+        worker_stall_threshold_ms = _int_env("AUDIT_ALERT_WORKER_STALL_THRESHOLD_MS")
+        quarantine_count_threshold = _int_env("AUDIT_ALERT_QUARANTINE_COUNT_THRESHOLD")
+
+        if redis.available:
+            if pel_pending_threshold is not None and (redis.pending_count or 0) > pel_pending_threshold:
+                emit_security_alert(
+                    condition="pel_backlog_threshold_exceeded", severity="warning", component="audit-delivery",
+                    message="Pending-entries-list backlog exceeds configured threshold",
+                    metadata={"pending_count": redis.pending_count, "threshold": pel_pending_threshold},
+                )
+            if (pel_age_threshold is not None and redis.oldest_pending_age_seconds is not None
+                    and redis.oldest_pending_age_seconds > pel_age_threshold):
+                emit_security_alert(
+                    condition="pel_entry_age_threshold_exceeded", severity="warning", component="audit-delivery",
+                    message="Oldest pending stream entry exceeds configured age threshold",
+                    metadata={"oldest_pending_age_seconds": redis.oldest_pending_age_seconds, "threshold": pel_age_threshold},
+                )
+            if (worker_stall_threshold_ms is not None and redis.least_idle_consumer_ms is not None
+                    and redis.least_idle_consumer_ms > worker_stall_threshold_ms):
+                emit_security_alert(
+                    condition="audit_worker_stalled", severity="warning", component="audit-worker",
+                    message="Least-idle consumer exceeds configured stall threshold -- worker may have stopped processing",
+                    metadata={"least_idle_consumer_ms": redis.least_idle_consumer_ms, "threshold": worker_stall_threshold_ms},
+                )
+
+        if not persistence.available:
+            emit_security_alert(
+                condition="audit_database_unavailable", severity="critical", component="audit-persistence",
+                message="Audit database is unavailable", metadata={"error": persistence.error},
+            )
+        elif quarantine_count_threshold is not None and (persistence.quarantine_count or 0) > quarantine_count_threshold:
+            emit_security_alert(
+                condition="quarantine_count_threshold_exceeded", severity="warning", component="audit-worker",
+                message="Quarantined-event count exceeds configured threshold",
+                metadata={"quarantine_count": persistence.quarantine_count, "threshold": quarantine_count_threshold},
+            )
+    except Exception:  # noqa: BLE001, S110 -- alert evaluation must never affect the health response itself; the alert primitive already logs its own emission failures separately
+        pass
+
+
 def get_pipeline_health(reader, db: Session) -> AuditPipelineHealth:
+    redis_health = get_redis_pipeline_health(reader)
+    persistence_health = get_persistence_pipeline_health(db)
+    _evaluate_health_alerts(redis_health, persistence_health)
     return AuditPipelineHealth(
         generated_at=datetime.now(timezone.utc),
-        redis=get_redis_pipeline_health(reader),
-        persistence=get_persistence_pipeline_health(db),
+        redis=redis_health,
+        persistence=persistence_health,
         retention_integrity=get_retention_integrity_health(),
     )

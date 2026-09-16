@@ -2,10 +2,20 @@
 observability, computed live from Redis + MySQL state. Same "unknown is
 never fabricated as health" discipline as audit/source_semantics.py's
 own existing tests.
+
+Track E4 (breadth pass) added: _evaluate_health_alerts(), called from
+get_pipeline_health() after both sides are computed. Tests below
+monkeypatch services.audit_health_service.emit_security_alert with a
+recording stub -- this checks WHICH conditions get wired with WHAT
+metadata, independent of security_alerts.py's own dedup/sink behavior
+(already covered by tests/test_security_alerts.py).
 """
 from datetime import datetime
 
+import pytest
+
 from db.models import AuditEventRecord, QuarantinedAuditEvent
+from services import audit_health_service
 from services.audit_health_service import (
     get_persistence_pipeline_health,
     get_pipeline_health,
@@ -135,12 +145,12 @@ def test_persistence_health_degrades_gracefully_on_db_failure():
 # Combined
 # ---------------------------------------------------------------------------
 
-def test_get_pipeline_health_combines_both_sides(stream_reader, db_session):
+def test_get_pipeline_health_combines_both_sides(stream_reader, db_session, recording_alerts):
     reader, mock_redis = stream_reader
     mock_redis.xlen.return_value = 0
     mock_redis.xpending.return_value = {"pending": 0}
     mock_redis.xinfo_groups.return_value = []
-    mock_redis.xinfo_consumers.return_value = []
+    mock_redis.xinfo_consumers.return_value = [{"name": "worker-1", "pending": 0, "idle": 100}]
 
     health = get_pipeline_health(reader, db_session)
 
@@ -148,3 +158,225 @@ def test_get_pipeline_health_combines_both_sides(stream_reader, db_session):
     assert health.generated_at.tzinfo is not None
     assert health.redis.available is True
     assert health.persistence.available is True
+
+
+# ---------------------------------------------------------------------------
+# Track E4 (breadth pass): alert wiring
+# ---------------------------------------------------------------------------
+
+class _RecordedCall:
+    def __init__(self, kwargs):
+        self.condition = kwargs.get("condition")
+        self.severity = kwargs.get("severity")
+        self.component = kwargs.get("component")
+        self.metadata = kwargs.get("metadata")
+
+
+@pytest.fixture
+def recording_alerts(monkeypatch):
+    calls = []
+
+    def _fake_emit(**kwargs):
+        calls.append(_RecordedCall(kwargs))
+
+    monkeypatch.setattr(audit_health_service, "emit_security_alert", _fake_emit)
+    return calls
+
+
+def _consumers(idle_ms=100):
+    return [{"name": "worker-1", "pending": 0, "idle": idle_ms}]
+
+
+def test_redis_unavailable_fires_critical_alert(stream_reader, db_session, recording_alerts):
+    reader, mock_redis = stream_reader
+    mock_redis.xlen.side_effect = ConnectionError("redis unreachable")
+
+    get_pipeline_health(reader, db_session)
+
+    conditions = [c.condition for c in recording_alerts]
+    assert "redis_stream_unavailable" in conditions
+    fired = next(c for c in recording_alerts if c.condition == "redis_stream_unavailable")
+    assert fired.severity == "critical"
+    assert fired.component == "audit-delivery"
+
+
+def test_no_consumer_ever_registered_fires_critical_alert(stream_reader, db_session, recording_alerts):
+    reader, mock_redis = stream_reader
+    mock_redis.xlen.return_value = 0
+    mock_redis.xpending.return_value = {"pending": 0}
+    mock_redis.xinfo_groups.return_value = []
+    mock_redis.xinfo_consumers.return_value = []  # nobody has ever registered
+
+    get_pipeline_health(reader, db_session)
+
+    conditions = [c.condition for c in recording_alerts]
+    assert "audit_worker_never_registered" in conditions
+    assert "redis_stream_unavailable" not in conditions  # redis itself is fine
+
+
+def test_healthy_redis_with_a_registered_consumer_fires_no_availability_alerts(stream_reader, db_session, recording_alerts):
+    reader, mock_redis = stream_reader
+    mock_redis.xlen.return_value = 0
+    mock_redis.xpending.return_value = {"pending": 0}
+    mock_redis.xinfo_groups.return_value = []
+    mock_redis.xinfo_consumers.return_value = _consumers()
+
+    get_pipeline_health(reader, db_session)
+
+    conditions = [c.condition for c in recording_alerts]
+    assert "redis_stream_unavailable" not in conditions
+    assert "audit_worker_never_registered" not in conditions
+
+
+def test_pel_pending_threshold_unconfigured_fires_nothing(stream_reader, db_session, recording_alerts, monkeypatch):
+    monkeypatch.delenv("AUDIT_ALERT_PEL_PENDING_THRESHOLD", raising=False)
+    reader, mock_redis = stream_reader
+    mock_redis.xlen.return_value = 100
+    mock_redis.xpending.return_value = {"pending": 99999}  # would be "abnormal" by any reasonable guess
+    mock_redis.xpending_range.return_value = []
+    mock_redis.xinfo_groups.return_value = []
+    mock_redis.xinfo_consumers.return_value = _consumers()
+
+    get_pipeline_health(reader, db_session)
+
+    assert "pel_backlog_threshold_exceeded" not in [c.condition for c in recording_alerts], \
+        "must never fabricate a threshold that was never configured"
+
+
+def test_pel_pending_threshold_configured_and_exceeded_fires_warning(stream_reader, db_session, recording_alerts, monkeypatch):
+    monkeypatch.setenv("AUDIT_ALERT_PEL_PENDING_THRESHOLD", "10")
+    reader, mock_redis = stream_reader
+    mock_redis.xlen.return_value = 100
+    mock_redis.xpending.return_value = {"pending": 50}
+    mock_redis.xpending_range.return_value = [
+        {"message_id": "1-0", "consumer": "w1", "time_since_delivered": 1000, "times_delivered": 1},
+    ]
+    mock_redis.xinfo_groups.return_value = []
+    mock_redis.xinfo_consumers.return_value = _consumers()
+
+    get_pipeline_health(reader, db_session)
+
+    fired = next(c for c in recording_alerts if c.condition == "pel_backlog_threshold_exceeded")
+    assert fired.severity == "warning"
+    assert fired.metadata["pending_count"] == 50
+    assert fired.metadata["threshold"] == 10
+
+
+def test_pel_pending_threshold_configured_but_not_exceeded_fires_nothing(stream_reader, db_session, recording_alerts, monkeypatch):
+    monkeypatch.setenv("AUDIT_ALERT_PEL_PENDING_THRESHOLD", "1000")
+    reader, mock_redis = stream_reader
+    mock_redis.xlen.return_value = 100
+    mock_redis.xpending.return_value = {"pending": 5}
+    mock_redis.xpending_range.return_value = [
+        {"message_id": "1-0", "consumer": "w1", "time_since_delivered": 100, "times_delivered": 1},
+    ]
+    mock_redis.xinfo_groups.return_value = []
+    mock_redis.xinfo_consumers.return_value = _consumers()
+
+    get_pipeline_health(reader, db_session)
+
+    assert "pel_backlog_threshold_exceeded" not in [c.condition for c in recording_alerts]
+
+
+def test_pel_age_threshold_configured_and_exceeded_fires_warning(stream_reader, db_session, recording_alerts, monkeypatch):
+    monkeypatch.setenv("AUDIT_ALERT_PEL_AGE_THRESHOLD_SECONDS", "60")
+    reader, mock_redis = stream_reader
+    mock_redis.xlen.return_value = 10
+    mock_redis.xpending.return_value = {"pending": 1}
+    mock_redis.xpending_range.return_value = [
+        {"message_id": "1-0", "consumer": "w1", "time_since_delivered": 120000, "times_delivered": 1},  # 120s
+    ]
+    mock_redis.xinfo_groups.return_value = []
+    mock_redis.xinfo_consumers.return_value = _consumers()
+
+    get_pipeline_health(reader, db_session)
+
+    fired = next(c for c in recording_alerts if c.condition == "pel_entry_age_threshold_exceeded")
+    assert fired.severity == "warning"
+    assert fired.metadata["oldest_pending_age_seconds"] == 120.0
+
+
+def test_worker_stall_threshold_configured_and_exceeded_fires_warning(stream_reader, db_session, recording_alerts, monkeypatch):
+    monkeypatch.setenv("AUDIT_ALERT_WORKER_STALL_THRESHOLD_MS", "5000")
+    reader, mock_redis = stream_reader
+    mock_redis.xlen.return_value = 0
+    mock_redis.xpending.return_value = {"pending": 0}
+    mock_redis.xinfo_groups.return_value = []
+    mock_redis.xinfo_consumers.return_value = _consumers(idle_ms=999999)
+
+    get_pipeline_health(reader, db_session)
+
+    fired = next(c for c in recording_alerts if c.condition == "audit_worker_stalled")
+    assert fired.severity == "warning"
+    assert fired.metadata["least_idle_consumer_ms"] == 999999
+
+
+def test_audit_database_unavailable_fires_critical_alert(stream_reader, recording_alerts):
+    from unittest.mock import MagicMock
+
+    reader, mock_redis = stream_reader
+    mock_redis.xlen.return_value = 0
+    mock_redis.xpending.return_value = {"pending": 0}
+    mock_redis.xinfo_groups.return_value = []
+    mock_redis.xinfo_consumers.return_value = _consumers()
+
+    broken_db = MagicMock()
+    broken_db.query.side_effect = Exception("simulated MySQL outage")
+
+    get_pipeline_health(reader, broken_db)
+
+    fired = next(c for c in recording_alerts if c.condition == "audit_database_unavailable")
+    assert fired.severity == "critical"
+    assert fired.component == "audit-persistence"
+
+
+def test_quarantine_count_threshold_unconfigured_fires_nothing(stream_reader, db_session, recording_alerts, monkeypatch):
+    monkeypatch.delenv("AUDIT_ALERT_QUARANTINE_COUNT_THRESHOLD", raising=False)
+    db_session.add(QuarantinedAuditEvent(stream_message_id="1-0", raw_data="{}", failure_category="malformed", delivery_attempts=5))
+    db_session.commit()
+    reader, mock_redis = stream_reader
+    mock_redis.xlen.return_value = 0
+    mock_redis.xpending.return_value = {"pending": 0}
+    mock_redis.xinfo_groups.return_value = []
+    mock_redis.xinfo_consumers.return_value = _consumers()
+
+    get_pipeline_health(reader, db_session)
+
+    assert "quarantine_count_threshold_exceeded" not in [c.condition for c in recording_alerts]
+
+
+def test_quarantine_count_threshold_configured_and_exceeded_fires_warning(stream_reader, db_session, recording_alerts, monkeypatch):
+    monkeypatch.setenv("AUDIT_ALERT_QUARANTINE_COUNT_THRESHOLD", "1")
+    db_session.add(QuarantinedAuditEvent(stream_message_id="1-0", raw_data="{}", failure_category="malformed", delivery_attempts=5))
+    db_session.add(QuarantinedAuditEvent(stream_message_id="2-0", raw_data="{}", failure_category="malformed", delivery_attempts=5))
+    db_session.commit()
+    reader, mock_redis = stream_reader
+    mock_redis.xlen.return_value = 0
+    mock_redis.xpending.return_value = {"pending": 0}
+    mock_redis.xinfo_groups.return_value = []
+    mock_redis.xinfo_consumers.return_value = _consumers()
+
+    get_pipeline_health(reader, db_session)
+
+    fired = next(c for c in recording_alerts if c.condition == "quarantine_count_threshold_exceeded")
+    assert fired.severity == "warning"
+    assert fired.metadata["quarantine_count"] == 2
+    assert fired.metadata["threshold"] == 1
+
+
+def test_alert_evaluation_never_raises_even_if_emit_itself_is_broken(stream_reader, db_session, monkeypatch):
+    """The blanket try/except in _evaluate_health_alerts must protect the
+    health response even from a bug in the alerting call itself -- not
+    just from a working-but-unavailable sink (already covered in
+    test_security_alerts.py)."""
+    reader, mock_redis = stream_reader
+    mock_redis.xlen.side_effect = ConnectionError("redis unreachable")  # triggers an alert condition
+
+    def _broken_emit(**kwargs):
+        raise RuntimeError("simulated bug in alert emission itself")
+
+    monkeypatch.setattr(audit_health_service, "emit_security_alert", _broken_emit)
+
+    health = get_pipeline_health(reader, db_session)  # must not raise
+
+    assert health.redis.available is False  # the underlying health fact is still correctly reported

@@ -38,6 +38,7 @@ from audit.record_integrity import (
     verify_audit_event_hash,
     verify_quarantine_record_hash,
 )
+from audit.security_alerts import emit_security_alert
 from db.models import (
     AuditEventRecord,
     QuarantinedAuditEvent,
@@ -211,6 +212,24 @@ def main() -> int:
     if passed:
         print("[OK] integrity verification passed")
         return 0
+
+    # Track E4: tamper/corruption detection is exactly the kind of
+    # condition that must not depend on someone reading this script's
+    # exit code out of a cron log -- emit_security_alert() never raises
+    # and never blocks this script's own exit path, it only adds a
+    # second, independent observability channel (stdout/JSONL) on top.
+    emit_security_alert(
+        condition="integrity_verification_failed",
+        severity="critical",
+        component="integrity-verification",
+        message="Stored audit record integrity verification found tampered, corrupted, or structurally invalid records",
+        metadata={
+            "events_invalid": len(events_stats["invalid"]),
+            "events_structural": len(events_stats["structural"]),
+            "quarantine_invalid": len(quarantine_stats["invalid"]),
+            "quarantine_structural": len(quarantine_stats["structural"]),
+        },
+    )
     print("[FAIL] integrity verification found problems -- see above", file=sys.stderr)
     return 1
 
