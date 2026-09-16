@@ -27,16 +27,29 @@ import pytest
 import redis as redis_lib
 from sqlalchemy import create_engine, text
 
-TEST_REDIS_URL = os.getenv("B0_TEST_REDIS_URL", "redis://localhost:6380")
-TEST_MYSQL_ROOT_URL = os.getenv(
-    "B0_TEST_MYSQL_ROOT_URL", "mysql+pymysql://root:root@localhost:3306/mysql"
+from tests._mysql_integration_guard import (
+    MissingTestMySQLEndpoint,
+    validate_test_mysql_url,
 )
+
+TEST_REDIS_URL = os.getenv("B0_TEST_REDIS_URL", "redis://localhost:6380")
+try:
+    # P0 test-isolation fix (2026-09-16): no implicit localhost:3306
+    # default -- ProductionMySQLEndpointRejected is deliberately NOT
+    # caught here, so a misconfigured production endpoint fails
+    # collection loudly instead of silently running destructive SQL
+    # against it. See tests/_mysql_integration_guard.py.
+    TEST_MYSQL_ROOT_URL = validate_test_mysql_url(os.environ.get("B0_TEST_MYSQL_ROOT_URL"))
+except MissingTestMySQLEndpoint:
+    TEST_MYSQL_ROOT_URL = None
 TEST_DB_NAME = "omnibioai_audit_p0_pel_test"
 TEST_STREAM = f"audit:events:p0-pel-test-{uuid.uuid4().hex[:8]}"
 TEST_GROUP = "audit-workers"
 
 
 def _real_backends_available():
+    if TEST_MYSQL_ROOT_URL is None:
+        return False
     try:
         r = redis_lib.from_url(TEST_REDIS_URL, socket_connect_timeout=2)
         r.ping()

@@ -21,15 +21,34 @@ from pathlib import Path
 import pytest
 from sqlalchemy import create_engine, text
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
-TEST_MYSQL_ROOT_URL = os.getenv(
-    "B0_TEST_MYSQL_ROOT_URL", "mysql+pymysql://root:root@localhost:3306/mysql"
+from tests._mysql_integration_guard import (
+    MissingTestMySQLEndpoint,
+    refuse_if_accounts_exist,
+    validate_test_mysql_url,
 )
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+try:
+    # P0 test-isolation fix (2026-09-16): no implicit localhost:3306
+    # default -- ProductionMySQLEndpointRejected is deliberately NOT
+    # caught here, so a misconfigured production endpoint fails
+    # collection loudly instead of silently running this file's
+    # CREATE USER/DROP USER against it. See
+    # tests/_mysql_integration_guard.py for the full incident this
+    # guards against: this exact fixture's teardown destroyed real
+    # production audit_writer/audit_reader/audit_maintenance accounts
+    # twice on 2026-09-16, via the same silent default this replaces.
+    TEST_MYSQL_ROOT_URL = validate_test_mysql_url(os.environ.get("B0_TEST_MYSQL_ROOT_URL"))
+except MissingTestMySQLEndpoint:
+    TEST_MYSQL_ROOT_URL = None
 _RUN_ID = uuid.uuid4().hex[:8]
 TEST_DB_NAME = f"omnibioai_audit_e3_test_{_RUN_ID}"
+_PROVISIONED_USER_NAMES = ("audit_writer", "audit_reader", "audit_maintenance")
 
 
 def _real_mysql_available():
+    if TEST_MYSQL_ROOT_URL is None:
+        return False
     try:
         engine = create_engine(TEST_MYSQL_ROOT_URL, connect_args={"connect_timeout": 2})
         with engine.connect():
@@ -41,15 +60,19 @@ def _real_mysql_available():
 
 pytestmark = pytest.mark.skipif(
     not _real_mysql_available(),
-    reason="real MySQL not reachable (set B0_TEST_MYSQL_ROOT_URL) -- skipped, not failed",
+    reason="real MySQL not reachable (set B0_TEST_MYSQL_ROOT_URL to an isolated, "
+    "non-production instance) -- skipped, not failed",
 )
 
 
 @pytest.fixture(scope="module")
 def real_mysql_db():
     """Creates a throwaway database, runs the real Alembic migrations
-    against it, yields its admin URL, then drops the database and any
-    provisioned users at teardown."""
+    against it, yields its admin URL, then drops ONLY that database at
+    teardown. Does not touch any MySQL user -- ownership of the
+    provisioned_users fixture's accounts belongs to that fixture (see
+    below), not here. This fixture's teardown is scoped exclusively to
+    the UUID-suffixed database it itself created."""
     root_engine = create_engine(TEST_MYSQL_ROOT_URL)
     with root_engine.connect() as conn:
         conn.execute(text(f"DROP DATABASE IF EXISTS {TEST_DB_NAME}"))
@@ -70,8 +93,6 @@ def real_mysql_db():
     yield admin_url
 
     with root_engine.connect() as conn:
-        for user in ("audit_writer", "audit_reader", "audit_maintenance"):
-            conn.execute(text(f"DROP USER IF EXISTS '{user}'@'%'"))
         conn.execute(text(f"DROP DATABASE IF EXISTS {TEST_DB_NAME}"))
         conn.commit()
 
@@ -80,7 +101,17 @@ def real_mysql_db():
 def provisioned_users(real_mysql_db):
     """Runs the real provisioning script as a subprocess against the
     throwaway database -- proves the actual shipped tool, not a
-    reimplementation of its logic."""
+    reimplementation of its logic. The shipped script hardcodes the
+    account names audit_writer/audit_reader/audit_maintenance (it takes
+    no username parameter), so this fixture cannot rename them; instead
+    it refuses to run at all if those names already exist on the target
+    server (ownership-safe: it will only ever create and later delete
+    accounts it can prove it created itself), and the endpoint guard
+    above ensures the target server is never production regardless."""
+    root_engine = create_engine(TEST_MYSQL_ROOT_URL)
+    with root_engine.connect() as conn:
+        refuse_if_accounts_exist(conn, _PROVISIONED_USER_NAMES)
+
     writer_pw, reader_pw, maint_pw = "w-pw-" + _RUN_ID, "r-pw-" + _RUN_ID, "m-pw-" + _RUN_ID
     env = {
         **os.environ,
@@ -99,11 +130,24 @@ def provisioned_users(real_mysql_db):
 
     base = make_url(real_mysql_db)
     host_port = f"{base.host}:{base.port or 3306}"
-    return {
-        "writer": f"mysql+pymysql://audit_writer:{writer_pw}@{host_port}/{TEST_DB_NAME}",
-        "reader": f"mysql+pymysql://audit_reader:{reader_pw}@{host_port}/{TEST_DB_NAME}",
-        "maintenance": f"mysql+pymysql://audit_maintenance:{maint_pw}@{host_port}/{TEST_DB_NAME}",
-    }
+    try:
+        yield {
+            "writer": f"mysql+pymysql://audit_writer:{writer_pw}@{host_port}/{TEST_DB_NAME}",
+            "reader": f"mysql+pymysql://audit_reader:{reader_pw}@{host_port}/{TEST_DB_NAME}",
+            "maintenance": f"mysql+pymysql://audit_maintenance:{maint_pw}@{host_port}/{TEST_DB_NAME}",
+        }
+    finally:
+        # Ownership-scoped teardown: this fixture proved above (via
+        # refuse_if_accounts_exist) that none of these three names
+        # existed before it ran, and it is the only code path that
+        # created them (the shipped script's own CREATE USER IF NOT
+        # EXISTS), so dropping exactly these three names here is safe
+        # -- it can never delete an account this fixture did not
+        # itself create.
+        with root_engine.connect() as conn:
+            for user in _PROVISIONED_USER_NAMES:
+                conn.execute(text(f"DROP USER IF EXISTS '{user}'@'%'"))
+            conn.commit()
 
 
 def _integration_test_secret() -> str:

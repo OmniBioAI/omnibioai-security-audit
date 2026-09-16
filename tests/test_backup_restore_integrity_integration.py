@@ -33,16 +33,29 @@ from pathlib import Path
 import pytest
 from sqlalchemy import create_engine, text
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
-TEST_MYSQL_ROOT_URL = os.getenv(
-    "B0_TEST_MYSQL_ROOT_URL", "mysql+pymysql://root:root@localhost:3306/mysql"
+from tests._mysql_integration_guard import (
+    MissingTestMySQLEndpoint,
+    validate_test_mysql_url,
 )
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+try:
+    # P0 test-isolation fix (2026-09-16): no implicit localhost:3306
+    # default -- ProductionMySQLEndpointRejected is deliberately NOT
+    # caught here, so a misconfigured production endpoint fails
+    # collection loudly instead of silently running destructive SQL
+    # against it. See tests/_mysql_integration_guard.py.
+    TEST_MYSQL_ROOT_URL = validate_test_mysql_url(os.environ.get("B0_TEST_MYSQL_ROOT_URL"))
+except MissingTestMySQLEndpoint:
+    TEST_MYSQL_ROOT_URL = None
 _RUN_ID = uuid.uuid4().hex[:8]
 SOURCE_DB = f"omnibioai_audit_e3_backup_src_{_RUN_ID}"
 RESTORED_DB = f"omnibioai_audit_e3_backup_dst_{_RUN_ID}"
 
 
 def _real_mysql_available():
+    if TEST_MYSQL_ROOT_URL is None:
+        return False
     try:
         engine = create_engine(TEST_MYSQL_ROOT_URL, connect_args={"connect_timeout": 2})
         with engine.connect():
@@ -121,9 +134,24 @@ def restored_db(source_db_with_data, tmp_path_factory):
     dump_dir = tmp_path_factory.mktemp("e3-backup-dump")
     dump_file = dump_dir / "dump.sql"
 
+    # P0 test-isolation fix (2026-09-16): the mysqldump/mysql CLIs below
+    # used to hardcode -h 127.0.0.1 -uroot -proot with no -P at all,
+    # which means they always targeted the MySQL client's default port
+    # 3306 -- production, on this host -- regardless of what
+    # B0_TEST_MYSQL_ROOT_URL's port said. Deriving host/port/user/
+    # password from the already-guarded TEST_MYSQL_ROOT_URL instead
+    # closes that gap: it can never point at port 3306, because
+    # validate_test_mysql_url() already refused that when this module
+    # was imported.
+    from sqlalchemy.engine.url import make_url
+
+    _admin = make_url(TEST_MYSQL_ROOT_URL)
+    _host, _port = _admin.host, str(_admin.port)
+    _user, _password = _admin.username, _admin.password or ""
+
     subprocess.run(
         [
-            "mysqldump", "-h", "127.0.0.1", "-uroot", "-proot",
+            "mysqldump", "-h", _host, "-P", _port, "-u", _user, f"-p{_password}",
             "--single-transaction", "--quick", "--lock-tables=false",
             "--routines", "--triggers", "--events",
             SOURCE_DB,
@@ -139,7 +167,7 @@ def restored_db(source_db_with_data, tmp_path_factory):
         conn.commit()
 
     subprocess.run(
-        ["mysql", "-h", "127.0.0.1", "-uroot", "-proot", RESTORED_DB],
+        ["mysql", "-h", _host, "-P", _port, "-u", _user, f"-p{_password}", RESTORED_DB],
         stdin=dump_file.open("r"), check=True, timeout=30,
     )
 
