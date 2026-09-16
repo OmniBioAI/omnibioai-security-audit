@@ -12,8 +12,10 @@ driftable copy of the same facts.
 """
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -51,10 +53,32 @@ class PersistencePipelineHealth:
 
 
 @dataclass(frozen=True)
+class RetentionIntegrityHealth:
+    """V2-003 (Track E3) Phase 18: reads the optional status files
+    scripts/verify_audit_integrity.py and scripts/audit_retention_cleanup.py
+    write when AUDIT_HEALTH_STATUS_DIR is configured -- these are
+    external script runs, not part of this API/worker's own runtime, so
+    unlike the Redis/MySQL sections above there is no live state to
+    query; a status file is the only honest source. Both fields are
+    None (not fabricated) when unconfigured or never yet run -- same
+    "unknown is never fabricated as health" discipline as the rest of
+    this module.
+    """
+    last_integrity_verification_ts: str | None = None
+    last_integrity_verification_result: str | None = None
+    last_integrity_events_invalid: int | None = None
+    last_retention_run_ts: str | None = None
+    last_retention_run_result: str | None = None
+    last_retention_deleted_total: int | None = None
+    status_source: str = "not_configured"  # "configured" | "not_configured"
+
+
+@dataclass(frozen=True)
 class AuditPipelineHealth:
     generated_at: datetime
     redis: RedisPipelineHealth
     persistence: PersistencePipelineHealth
+    retention_integrity: RetentionIntegrityHealth
 
 
 def get_redis_pipeline_health(reader) -> RedisPipelineHealth:
@@ -144,9 +168,46 @@ def get_persistence_pipeline_health(db: Session) -> PersistencePipelineHealth:
         return PersistencePipelineHealth(available=False, error=type(e).__name__)
 
 
+def _read_env_file(path: Path) -> dict[str, str]:
+    values: dict[str, str] = {}
+    if not path.exists():
+        return values
+    for line in path.read_text().splitlines():
+        if "=" in line:
+            key, _, value = line.partition("=")
+            values[key] = value
+    return values
+
+
+def get_retention_integrity_health() -> RetentionIntegrityHealth:
+    status_dir = os.environ.get("AUDIT_HEALTH_STATUS_DIR")
+    if not status_dir:
+        return RetentionIntegrityHealth(status_source="not_configured")
+
+    verification = _read_env_file(Path(status_dir) / "audit-integrity-verification.env")
+    retention = _read_env_file(Path(status_dir) / "audit-retention-run.env")
+
+    def _int_or_none(v: str | None) -> int | None:
+        try:
+            return int(v) if v is not None else None
+        except ValueError:
+            return None
+
+    return RetentionIntegrityHealth(
+        last_integrity_verification_ts=verification.get("LAST_VERIFICATION_TS"),
+        last_integrity_verification_result=verification.get("LAST_VERIFICATION_RESULT"),
+        last_integrity_events_invalid=_int_or_none(verification.get("LAST_VERIFICATION_EVENTS_INVALID")),
+        last_retention_run_ts=retention.get("LAST_RETENTION_RUN_TS"),
+        last_retention_run_result=retention.get("LAST_RETENTION_RUN_RESULT"),
+        last_retention_deleted_total=_int_or_none(retention.get("LAST_RETENTION_RUN_DELETED_TOTAL")),
+        status_source="configured",
+    )
+
+
 def get_pipeline_health(reader, db: Session) -> AuditPipelineHealth:
     return AuditPipelineHealth(
         generated_at=datetime.now(timezone.utc),
         redis=get_redis_pipeline_health(reader),
         persistence=get_persistence_pipeline_health(db),
+        retention_integrity=get_retention_integrity_health(),
     )

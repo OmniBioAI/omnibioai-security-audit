@@ -29,6 +29,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+from datetime import timedelta
 
 _DOMAIN_LABEL = "omnibioai-audit-record-integrity"
 
@@ -41,7 +42,24 @@ def _canonical_json(value) -> str:
     """Deterministic serialization for the one JSON-typed field
     (audit_events.context) -- sort_keys so insertion order never
     affects the hash, default=str so any datetime/Decimal-shaped value
-    that slipped into context serializes the same way every time."""
+    that slipped into context serializes the same way every time.
+
+    `value` may arrive as an already-parsed dict (the normal case: a
+    fresh in-memory event about to be inserted, or an ORM-mapped row,
+    since SQLAlchemy's JSON column type deserializes on read) OR as a
+    raw JSON string (a row fetched via a raw/`text()` SQL query, which
+    bypasses ORM-level type deserialization and returns the driver's
+    literal string for a JSON column). Both must canonicalize to the
+    same bytes for the same logical content, or verification would
+    spuriously fail for every row read a different way than it was
+    written -- confirmed to actually happen before this fix, via a real
+    end-to-end test against MySQL, not just reasoned about.
+    """
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except (TypeError, ValueError):
+            pass  # not actually JSON text -- fall through, hash it as the literal string it is
     return json.dumps(value, sort_keys=True, default=str, separators=(",", ":"))
 
 
@@ -69,6 +87,27 @@ def _canonical_message(record: dict, fields: tuple[str, ...]) -> bytes:
         if field == "context":
             value = _canonical_json(value if value is not None else {})
         elif field == "timestamp" and value is not None and hasattr(value, "isoformat"):
+            # audit_events.timestamp is a plain MySQL DATETIME column --
+            # no fractional-second precision. A Python datetime with
+            # microseconds (e.g. datetime.now()) has its fractional part
+            # collapsed by MySQL on INSERT -- but by ROUNDING to the
+            # nearest second (standard round-half-up: .500000 and above
+            # rounds up), NOT by truncating/flooring. This was verified
+            # empirically against a real MySQL 8.0 server (INSERT
+            # '...12:00:00.500000' reads back as '...12:00:01') after an
+            # earlier version of this function used floor-truncation
+            # instead and produced an intermittent, microsecond-value-
+            # dependent hash mismatch for genuinely untampered rows --
+            # roughly half of random datetime.now() values have
+            # microsecond >= 500000 and round up, silently disagreeing
+            # with a floor-based canonical form. Reproduced via a real
+            # end-to-end test suite run (not a unit test in isolation)
+            # before this fix; see tests/test_record_integrity.py's
+            # rounding-boundary tests for the pinned regression.
+            microsecond = value.microsecond
+            value = value.replace(microsecond=0)
+            if microsecond >= 500_000:
+                value = value + timedelta(seconds=1)
             value = value.isoformat()
         parts.append(f"{field}={value!s}")
     return "\n".join(parts).encode()

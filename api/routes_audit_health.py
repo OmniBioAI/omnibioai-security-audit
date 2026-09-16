@@ -59,4 +59,19 @@ def pipeline_health(
             ),
             "error": health.persistence.error,
         },
+        # V2-003 (Track E3) Phase 18: only populated if
+        # AUDIT_HEALTH_STATUS_DIR is configured -- see
+        # services/audit_health_service.py::RetentionIntegrityHealth's
+        # own docstring for why this can't be computed live the way the
+        # sections above are (retention/verification are external
+        # script runs, not this process's own runtime state).
+        "retention_integrity": {
+            "status_source": health.retention_integrity.status_source,
+            "last_integrity_verification_ts": health.retention_integrity.last_integrity_verification_ts,
+            "last_integrity_verification_result": health.retention_integrity.last_integrity_verification_result,
+            "last_integrity_events_invalid": health.retention_integrity.last_integrity_events_invalid,
+            "last_retention_run_ts": health.retention_integrity.last_retention_run_ts,
+            "last_retention_run_result": health.retention_integrity.last_retention_run_result,
+            "last_retention_deleted_total": health.retention_integrity.last_retention_deleted_total,
+        },
     }
