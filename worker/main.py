@@ -13,6 +13,7 @@ from redis.exceptions import TimeoutError as RedisTimeoutError
 
 from audit.config import AuditConfig
 from consumers.processor import classify_event_integrity, parse_audit_event
+from consumers.quarantine import QuarantineSink
 from consumers.sink import Sink
 from consumers.stream_reader import StreamReader
 from db.session import SessionLocal
@@ -85,6 +86,42 @@ def handle_message(reader: StreamReader, message_id: str, fields: dict) -> bool:
     return True
 
 
+def quarantine_and_ack(reader: StreamReader, message_id: str, fields: dict, delivery_attempts: int) -> bool:
+    """V2-002: durably records a poison entry, then acks it -- never the
+    other order. If the quarantine write itself fails (e.g. MySQL is
+    the very thing that's down), the entry is left unacked: it stays in
+    the PEL and the next sweep reclaims it again. Because it's already
+    at/above PEL_MAX_DELIVERIES, that next sweep routes it straight back
+    through this same quarantine path (not through N more
+    handle_message() attempts), so this cannot become an infinite hot
+    loop of *processing* attempts -- only a bounded-by-sweep-interval
+    retry of the (idempotent) quarantine write itself, exactly like any
+    other pending entry waiting out PEL_MIN_IDLE_MS.
+
+    Returns True if quarantined+acked, False if the quarantine write
+    failed (message remains pending, not lost).
+    """
+    db = SessionLocal()
+    try:
+        QuarantineSink(db).write(message_id, fields, delivery_attempts)
+    except Exception as e:  # noqa: BLE001 -- quarantine persistence failure must never crash the worker or ack the original
+        print(
+            f"[WORKER] failed to quarantine poison message {message_id}, "
+            f"will retry on next sweep (NOT acked, still pending): {e}"
+        )
+        return False
+    finally:
+        db.close()
+
+    reader.ack(message_id)
+    print(
+        f"[WORKER] POISON MESSAGE {message_id} quarantined after "
+        f"{delivery_attempts} delivery attempts -- durably recorded in "
+        f"quarantined_audit_events, then acked"
+    )
+    return True
+
+
 def sweep_pending(reader: StreamReader) -> None:
     """Reclaims and processes Pending Entries List messages abandoned by
     a crashed or stuck consumer -- see StreamReader.claim_stale()'s own
@@ -96,24 +133,23 @@ def sweep_pending(reader: StreamReader) -> None:
     worker, matching read_group()'s own contract in run() below -- a
     failed sweep just tries again next iteration.
 
-    Reclaimed entries run through the exact same handle_message() used
-    for freshly-read messages -- same classify/persist/ack path, so a
-    reclaimed message that fails again (still-down MySQL, say) is simply
-    left pending again and picked up by the next sweep once
-    PEL_MIN_IDLE_MS has re-elapsed, same as any other unacked entry.
+    Reclaimed (non-poison) entries run through the exact same
+    handle_message() used for freshly-read messages -- same
+    classify/persist/ack path, so a reclaimed message that fails again
+    (still-down MySQL, say) is simply left pending again and picked up
+    by the next sweep once PEL_MIN_IDLE_MS has re-elapsed, same as any
+    other unacked entry. Poison entries (>= PEL_MAX_DELIVERIES) go
+    through quarantine_and_ack() instead of handle_message() -- see
+    that function's docstring.
     """
     try:
-        claimed, poison_ids = reader.claim_stale(AuditConfig.CONSUMER_NAME)
+        claimed, poison_entries = reader.claim_stale(AuditConfig.CONSUMER_NAME)
     except Exception as e:  # noqa: BLE001 -- a Redis blip here must never kill the worker, same "NEVER break core system" contract read_group() below already has
         print(f"[WORKER] pending-entry sweep failed, will retry: {e}")
         return
 
-    for message_id in poison_ids:
-        print(
-            f"[WORKER] POISON MESSAGE {message_id} abandoned after "
-            f">={AuditConfig.PEL_MAX_DELIVERIES} delivery attempts -- "
-            f"ACKed without processing, never persisted, will not be retried again"
-        )
+    for message_id, fields, delivery_attempts in poison_entries:
+        quarantine_and_ack(reader, message_id, fields, delivery_attempts)
 
     for message_id, fields in claimed:
         handle_message(reader, message_id, fields)

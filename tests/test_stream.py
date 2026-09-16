@@ -147,7 +147,7 @@ def test_claim_stale_queries_xpending_range_with_config_defaults(stream_reader):
     reader, mock_redis = stream_reader
     mock_redis.xpending_range.return_value = []
 
-    claimed, poison_ids = reader.claim_stale("worker-2")
+    claimed, poison_entries = reader.claim_stale("worker-2")
 
     mock_redis.xpending_range.assert_called_once_with(
         AuditConfig.STREAM_NAME,
@@ -158,17 +158,17 @@ def test_claim_stale_queries_xpending_range_with_config_defaults(stream_reader):
         idle=AuditConfig.PEL_MIN_IDLE_MS,
     )
     assert claimed == []
-    assert poison_ids == []
+    assert poison_entries == []
 
 
 def test_claim_stale_returns_empty_when_nothing_stale(stream_reader):
     reader, mock_redis = stream_reader
     mock_redis.xpending_range.return_value = []
 
-    claimed, poison_ids = reader.claim_stale("worker-2")
+    claimed, poison_entries = reader.claim_stale("worker-2")
 
     assert claimed == []
-    assert poison_ids == []
+    assert poison_entries == []
     mock_redis.xclaim.assert_not_called()
     mock_redis.xack.assert_not_called()
 
@@ -178,7 +178,7 @@ def test_claim_stale_reclaims_entries_under_max_deliveries(stream_reader):
     mock_redis.xpending_range.return_value = [_pending_entry("5-0", times_delivered=2)]
     mock_redis.xclaim.return_value = [("5-0", {"data": "{}"})]
 
-    claimed, poison_ids = reader.claim_stale("worker-2")
+    claimed, poison_entries = reader.claim_stale("worker-2")
 
     mock_redis.xclaim.assert_called_once_with(
         AuditConfig.STREAM_NAME,
@@ -189,23 +189,46 @@ def test_claim_stale_reclaims_entries_under_max_deliveries(stream_reader):
     )
     mock_redis.xack.assert_not_called()
     assert claimed == [("5-0", {"data": "{}"})]
-    assert poison_ids == []
+    assert poison_entries == []
 
 
-def test_claim_stale_acks_poison_entries_without_reclaiming(stream_reader):
+def test_claim_stale_does_not_ack_poison_entries_itself(stream_reader):
+    """V2-002: claim_stale() must NOT ack poison entries -- that decision
+    belongs to the caller, only after a durable quarantine write
+    succeeds (worker/main.py::quarantine_and_ack). It fetches the
+    entry's fields via XRANGE (a pure read) instead, so the caller has
+    something to quarantine."""
     reader, mock_redis = stream_reader
     mock_redis.xpending_range.return_value = [
         _pending_entry("6-0", times_delivered=AuditConfig.PEL_MAX_DELIVERIES)
     ]
+    mock_redis.xrange.return_value = [("6-0", {"data": "some raw payload"})]
 
-    claimed, poison_ids = reader.claim_stale("worker-2")
+    claimed, poison_entries = reader.claim_stale("worker-2")
 
-    mock_redis.xack.assert_called_once_with(
-        AuditConfig.STREAM_NAME, AuditConfig.CONSUMER_GROUP, "6-0"
-    )
+    mock_redis.xack.assert_not_called()
     mock_redis.xclaim.assert_not_called()
+    mock_redis.xrange.assert_called_once_with(
+        AuditConfig.STREAM_NAME, min="6-0", max="6-0"
+    )
     assert claimed == []
-    assert poison_ids == ["6-0"]
+    assert poison_entries == [("6-0", {"data": "some raw payload"}, AuditConfig.PEL_MAX_DELIVERIES)]
+
+
+def test_claim_stale_poison_entry_with_no_xrange_result_gets_empty_fields(stream_reader):
+    """Defensive case: the entry could theoretically have expired from
+    the stream between XPENDING and XRANGE (e.g. concurrent trimming) --
+    must not crash, just hand back empty fields for the caller to
+    quarantine as best it can."""
+    reader, mock_redis = stream_reader
+    mock_redis.xpending_range.return_value = [
+        _pending_entry("6-1", times_delivered=AuditConfig.PEL_MAX_DELIVERIES)
+    ]
+    mock_redis.xrange.return_value = []
+
+    _claimed, poison_entries = reader.claim_stale("worker-2")
+
+    assert poison_entries == [("6-1", {}, AuditConfig.PEL_MAX_DELIVERIES)]
 
 
 def test_claim_stale_splits_a_mixed_batch_correctly(stream_reader):
@@ -216,12 +239,12 @@ def test_claim_stale_splits_a_mixed_batch_correctly(stream_reader):
         _pending_entry("7-2", times_delivered=AuditConfig.PEL_MAX_DELIVERIES - 1),
     ]
     mock_redis.xclaim.return_value = [("7-0", {"data": "a"}), ("7-2", {"data": "c"})]
+    mock_redis.xrange.return_value = [("7-1", {"data": "poison-payload"})]
 
-    claimed, poison_ids = reader.claim_stale("worker-2")
+    claimed, poison_entries = reader.claim_stale("worker-2")
 
-    mock_redis.xack.assert_called_once_with(
-        AuditConfig.STREAM_NAME, AuditConfig.CONSUMER_GROUP, "7-1"
-    )
+    mock_redis.xack.assert_not_called()
+    mock_redis.xrange.assert_called_once_with(AuditConfig.STREAM_NAME, min="7-1", max="7-1")
     mock_redis.xclaim.assert_called_once_with(
         AuditConfig.STREAM_NAME,
         AuditConfig.CONSUMER_GROUP,
@@ -229,7 +252,7 @@ def test_claim_stale_splits_a_mixed_batch_correctly(stream_reader):
         AuditConfig.PEL_MIN_IDLE_MS,
         ["7-0", "7-2"],
     )
-    assert poison_ids == ["7-1"]
+    assert poison_entries == [("7-1", {"data": "poison-payload"}, AuditConfig.PEL_MAX_DELIVERIES + 3)]
     assert claimed == [("7-0", {"data": "a"}), ("7-2", {"data": "c"})]
 
 

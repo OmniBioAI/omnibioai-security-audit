@@ -66,24 +66,68 @@ def test_sweep_pending_reclaimed_message_goes_through_real_handle_message_and_ac
 
 
 def test_sweep_pending_does_not_reprocess_poison_ids():
+    """V2-002: poison entries go through quarantine_and_ack(), never
+    handle_message() -- a signature/schema failure is permanent, not
+    something retrying via the normal persist path could ever fix."""
     reader = MagicMock()
-    reader.claim_stale.return_value = ([], ["9-0", "9-1"])
+    reader.claim_stale.return_value = (
+        [],
+        [("9-0", {"data": "not json"}, 5), ("9-1", {"data": "also not json"}, 5)],
+    )
+    mock_quarantine_instance = MagicMock()
+    mock_quarantine_instance.write.return_value = True
 
-    with patch("worker.main.handle_message") as mock_handle:
+    with patch("worker.main.handle_message") as mock_handle, \
+         patch("worker.main.SessionLocal") as mock_session_local, \
+         patch("worker.main.QuarantineSink", return_value=mock_quarantine_instance):
+        mock_session_local.return_value = MagicMock()
         worker.sweep_pending(reader)
 
     mock_handle.assert_not_called()
+    assert mock_quarantine_instance.write.call_count == 2
 
 
-def test_sweep_pending_logs_poison_ids_loudly(capsys):
+def test_sweep_pending_quarantines_then_acks_poison_entries(capsys):
+    """V2-002: the durable quarantine write must happen BEFORE the ack --
+    proven here by mocking QuarantineSink to record call order relative
+    to reader.ack."""
     reader = MagicMock()
-    reader.claim_stale.return_value = ([], ["9-0"])
+    reader.claim_stale.return_value = ([], [("9-0", {"data": "not json"}, 5)])
 
-    worker.sweep_pending(reader)
+    call_order = []
+    mock_quarantine_instance = MagicMock()
+    mock_quarantine_instance.write.side_effect = lambda *a, **kw: call_order.append("quarantine_write")
+    reader.ack.side_effect = lambda *a, **kw: call_order.append("ack")
+
+    with patch("worker.main.SessionLocal") as mock_session_local, \
+         patch("worker.main.QuarantineSink", return_value=mock_quarantine_instance):
+        mock_session_local.return_value = MagicMock()
+        worker.sweep_pending(reader)
+
+    assert call_order == ["quarantine_write", "ack"]
+    mock_quarantine_instance.write.assert_called_once_with("9-0", {"data": "not json"}, 5)
+    reader.ack.assert_called_once_with("9-0")
 
     captured = capsys.readouterr()
     assert "POISON MESSAGE" in captured.out
     assert "9-0" in captured.out
+    assert "quarantined" in captured.out
+
+
+def test_sweep_pending_does_not_ack_poison_entry_when_quarantine_write_fails():
+    """V2-002 core requirement: quarantine failure must never silently
+    ack (and thereby discard) the original poison message."""
+    reader = MagicMock()
+    reader.claim_stale.return_value = ([], [("9-0", {"data": "not json"}, 5)])
+    mock_quarantine_instance = MagicMock()
+    mock_quarantine_instance.write.side_effect = Exception("simulated MySQL outage")
+
+    with patch("worker.main.SessionLocal") as mock_session_local, \
+         patch("worker.main.QuarantineSink", return_value=mock_quarantine_instance):
+        mock_session_local.return_value = MagicMock()
+        worker.sweep_pending(reader)  # must not raise
+
+    reader.ack.assert_not_called()
 
 
 def test_sweep_pending_survives_claim_stale_raising(capsys):

@@ -16,6 +16,21 @@ class AuditConfig:
         "AUDIT_DATABASE_URL",
         "mysql+pymysql://root:root@localhost:3306/omnibioai_audit",
     )
+
+    # V2-003 (Track E3): least-privilege runtime DB credentials. The
+    # worker (writer) only ever needs INSERT+SELECT on audit_events and
+    # quarantined_audit_events; the read-only API routes only ever need
+    # SELECT. Both default to DATABASE_URL (the pre-existing,
+    # unrestricted-by-default connection) so an unprovisioned deployment
+    # keeps working exactly as before this change -- provisioning
+    # restricted `audit_writer`/`audit_reader` MySQL users (see
+    # scripts/provision_audit_db_users.py) and pointing these two env
+    # vars at them is a documented, opt-in rollout step, not a breaking
+    # requirement. Migrations/admin tooling continue using DATABASE_URL
+    # (unchanged, still typically root) -- schema management is
+    # deliberately not restricted by this change.
+    WRITER_DATABASE_URL = os.getenv("AUDIT_WRITER_DATABASE_URL", DATABASE_URL)
+    READER_DATABASE_URL = os.getenv("AUDIT_READER_DATABASE_URL", DATABASE_URL)
     CONSUMER_GROUP = os.getenv("AUDIT_CONSUMER_GROUP", "audit-workers")
     CONSUMER_NAME = os.getenv("AUDIT_CONSUMER_NAME", f"worker-{os.getpid()}")
 

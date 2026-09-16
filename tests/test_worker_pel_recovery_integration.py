@@ -380,27 +380,51 @@ def test_real_malformed_event_is_abandoned_after_max_deliveries_not_retried_fore
 
     for _ in range(MAX_DELIVERIES - 1):
         time.sleep(0.1)
-        claimed, poison_ids = real_redis_stream.claim_stale(
+        claimed, poison_entries = real_redis_stream.claim_stale(
             "worker-b", min_idle_ms=50, max_deliveries=MAX_DELIVERIES,
         )
-        assert poison_ids == []  # not poison yet -- still under the threshold
+        assert poison_entries == []  # not poison yet -- still under the threshold
         assert len(claimed) == 1
         cmsg_id, cfields = claimed[0]
         result = worker_module.handle_message(real_redis_stream, cmsg_id, cfields)
         assert result is False  # still unparseable
 
     # One more sweep: this entry has now been delivered MAX_DELIVERIES
-    # times without ever succeeding -- must be abandoned as poison, ACKed
-    # directly by claim_stale(), never handed back for a (MAX_DELIVERIES+1)th
-    # attempt.
+    # times without ever succeeding -- must be identified as poison, but
+    # (V2-002) claim_stale() itself must NOT ack it -- it stays pending
+    # until quarantine_and_ack() durably records it first.
     time.sleep(0.1)
-    claimed, poison_ids = real_redis_stream.claim_stale(
+    claimed, poison_entries = real_redis_stream.claim_stale(
         "worker-b", min_idle_ms=50, max_deliveries=MAX_DELIVERIES,
     )
     assert claimed == []
-    assert len(poison_ids) == 1
+    assert len(poison_entries) == 1
+    poison_message_id, poison_fields, delivery_attempts = poison_entries[0]
+    assert poison_message_id == message_id
+    assert delivery_attempts == MAX_DELIVERIES
+
+    pending_before_quarantine = real_redis_stream.redis.xpending(TEST_STREAM, TEST_GROUP)
+    assert pending_before_quarantine["pending"] == 1, (
+        "poison entry must remain pending until quarantine succeeds, not be "
+        "acked away by claim_stale() alone"
+    )
+
+    quarantined = worker_module.quarantine_and_ack(
+        real_redis_stream, poison_message_id, poison_fields, delivery_attempts,
+    )
+    assert quarantined is True
 
     # The PEL is now empty -- proof the loop actually terminated, not
     # just that this one sweep classified it correctly.
     pending_after = real_redis_stream.redis.xpending(TEST_STREAM, TEST_GROUP)
     assert pending_after["pending"] == 0
+
+    # And durable evidence of the poison message actually exists.
+    with TestSessionLocal() as session:
+        from db.models import QuarantinedAuditEvent
+
+        row = session.get(QuarantinedAuditEvent, poison_message_id)
+        assert row is not None
+        assert row.failure_category == "malformed"
+        assert row.delivery_attempts == MAX_DELIVERIES
+        assert row.raw_data == "this is not valid json at all"

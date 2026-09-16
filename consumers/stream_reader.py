@@ -77,14 +77,22 @@ class StreamReader:
         for a real-Redis proof (two live consumers racing to reclaim the
         same entry).
 
-        Returns (claimed, poison_ids):
+        Returns (claimed, poison_entries):
           claimed -- list of (message_id, fields) tuples now owned by
             `consumer_name`, ready for the normal handle_message() path,
             exactly like a message just read via read_group().
-          poison_ids -- message ids that exceeded max_deliveries and were
-            ACKed directly here (removed from the PEL, never handed back
-            for reprocessing) -- returned only so the caller can log them,
-            not for further action.
+          poison_entries -- list of (message_id, fields, times_delivered)
+            tuples for entries that exceeded max_deliveries.
+
+        V2-002: poison entries are deliberately NOT acked here anymore.
+        Fetched via XRANGE (a pure read -- does not touch PEL state,
+        does not reset idle time, does not affect times_delivered) so
+        the caller has the entry's actual fields to durably quarantine
+        BEFORE deciding whether it's safe to ack. Previously this method
+        acked poison entries itself, which meant an entry could be
+        removed from the stream with nothing but a print() as evidence
+        it ever existed -- see worker/main.py::quarantine_and_ack for
+        the caller that now owns the quarantine-then-ack ordering.
         """
         group = group or AuditConfig.CONSUMER_GROUP
         min_idle_ms = AuditConfig.PEL_MIN_IDLE_MS if min_idle_ms is None else min_idle_ms
@@ -99,11 +107,19 @@ class StreamReader:
 
         poison_ids = [e["message_id"] for e in stale if e["times_delivered"] >= max_deliveries]
         reclaimable_ids = [e["message_id"] for e in stale if e["times_delivered"] < max_deliveries]
+        deliveries_by_id = {e["message_id"]: e["times_delivered"] for e in stale}
 
-        if poison_ids:
-            self.redis.xack(self.stream, group, *poison_ids)
+        poison_entries = []
+        for message_id in poison_ids:
+            # XRANGE, not XCLAIM: reading fields for a poison entry must
+            # not reset its idle time or bump times_delivered -- it's
+            # already past the threshold and is being routed to
+            # quarantine, not handed back for another processing attempt.
+            entry_range = self.redis.xrange(self.stream, min=message_id, max=message_id)
+            fields = entry_range[0][1] if entry_range else {}
+            poison_entries.append((message_id, fields, deliveries_by_id[message_id]))
 
         claimed = []
         if reclaimable_ids:
             claimed = self.redis.xclaim(self.stream, group, consumer_name, min_idle_ms, reclaimable_ids)
-        return claimed, poison_ids
+        return claimed, poison_entries
