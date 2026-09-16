@@ -24,8 +24,20 @@ from tests._mysql_integration_guard import (
     MissingTestMySQLEndpoint,
     validate_test_mysql_url,
 )
+from tests._redis_integration_guard import (
+    MissingTestRedisEndpoint,
+    validate_test_redis_url,
+)
 
-TEST_REDIS_URL = os.getenv("B0_TEST_REDIS_URL", "redis://localhost:6380")
+try:
+    # PHI P1-5 test-isolation fix: no implicit localhost:6380 default --
+    # ProductionRedisEndpointRejected is deliberately NOT caught here, so
+    # a misconfigured production endpoint fails collection loudly instead
+    # of silently running against the shared, real Redis instance. See
+    # tests/_redis_integration_guard.py.
+    TEST_REDIS_URL = validate_test_redis_url(os.environ.get("B0_TEST_REDIS_URL"))
+except MissingTestRedisEndpoint:
+    TEST_REDIS_URL = None
 try:
     # P0 test-isolation fix (2026-09-16): no implicit localhost:3306
     # default -- ProductionMySQLEndpointRejected is deliberately NOT
@@ -41,7 +53,7 @@ TEST_GROUP = "audit-workers"
 
 
 def _real_backends_available():
-    if TEST_MYSQL_ROOT_URL is None:
+    if TEST_MYSQL_ROOT_URL is None or TEST_REDIS_URL is None:
         return False
     try:
         r = redis_lib.from_url(TEST_REDIS_URL, socket_connect_timeout=2)
