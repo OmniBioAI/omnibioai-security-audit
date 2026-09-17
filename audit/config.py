@@ -64,6 +64,38 @@ class AuditConfig:
     # one sweep into an unbounded-latency Redis call.
     PEL_SWEEP_BATCH = int(os.getenv("AUDIT_PEL_SWEEP_BATCH", "100"))
 
+    # Incident (2026-09-16): audit:events and its consumer group were
+    # destructively deleted in production. The worker's response
+    # (continuous NOGROUP retries with only a print()) was invisible to
+    # anyone not actively tailing logs. Two independent, narrowly scoped
+    # fixes -- see worker/main.py's NOGROUP handling:
+    #
+    # WORKER_AUTO_RECREATE_STREAM_ON_NOGROUP: deliberately OFF by
+    # default. Recreating audit:events/audit-workers via `XGROUP CREATE
+    # ... MKSTREAM` is only safe when NEITHER already exists (an existing
+    # group's own BUSYGROUP response is always tolerated and never
+    # touched -- see StreamReader.ensure_group()); it can never reset an
+    # existing group's cursor. But a worker that *always* auto-heals a
+    # missing stream/group cannot distinguish "accidental deletion,
+    # please heal" from "an operator is intentionally decommissioning
+    # this stream and does not want it silently recreated out from under
+    # them" -- an unresolvable semantic ambiguity from inside the worker
+    # alone. Left opt-in for deployments that have decided that
+    # tradeoff is acceptable for them; the safe default is to alert
+    # loudly (always on, see below) and let a human decide, not to
+    # silently paper over every deletion.
+    WORKER_AUTO_RECREATE_STREAM_ON_NOGROUP = (
+        os.getenv("AUDIT_WORKER_AUTO_RECREATE_STREAM_ON_NOGROUP", "false").lower() == "true"
+    )
+    # WORKER_NOGROUP_RETRY_BACKOFF_SECONDS: applied only when a NOGROUP
+    # condition was just observed, so a worker stuck in this state polls
+    # Redis at a bounded, sane rate instead of spinning as fast as
+    # exceptions can be thrown and caught -- never applied on the normal,
+    # healthy read path.
+    WORKER_NOGROUP_RETRY_BACKOFF_SECONDS = float(
+        os.getenv("AUDIT_WORKER_NOGROUP_RETRY_BACKOFF_SECONDS", "2.0")
+    )
+
     # PR2 of the audit:events integrity remediation (see audit/signing.py,
     # PR1): reuses the same JWT_SECRET every other platform service (and
     # this repo's own audit/jwt_verify.py) already reads -- not a new

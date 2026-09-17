@@ -8,15 +8,76 @@ scales independently of API request volume, and API request latency must
 never depend on a database write happening on the ingestion side.
 """
 import sys
+import time
 
 from redis.exceptions import TimeoutError as RedisTimeoutError
 
 from audit.config import AuditConfig
+from audit.security_alerts import emit_security_alert
 from consumers.processor import classify_event_integrity, parse_audit_event
 from consumers.quarantine import QuarantineSink
 from consumers.sink import Sink
 from consumers.stream_reader import StreamReader
 from db.session import SessionLocal
+
+_last_nogroup_recreate_attempt = 0.0  # module-level: rate-limits the recreate attempt itself
+
+
+def _is_nogroup_error(e: Exception) -> bool:
+    return "NOGROUP" in str(e)
+
+
+def _handle_nogroup(reader: StreamReader, e: Exception, context: str) -> None:
+    """Incident (2026-09-16): audit:events / audit-workers were
+    destructively deleted in production. The worker's only response was
+    a continuous print()ed NOGROUP retry, invisible to anyone not
+    actively tailing container logs. This is the fix for that
+    visibility gap, plus an opt-in (default OFF) bounded self-heal --
+    see AuditConfig.WORKER_AUTO_RECREATE_STREAM_ON_NOGROUP's own
+    docstring for why automatic recreation is not unconditionally safe
+    to enable (it can fight an operator's intentional stream
+    decommissioning) and is therefore not the default.
+
+    Always alerts (deduped by emit_security_alert() itself, so a
+    fast-retrying caller cannot turn this into a storm). Only attempts
+    recreation if explicitly opted in, and even then at most once per
+    AuditConfig.WORKER_NOGROUP_RETRY_BACKOFF_SECONDS -- reader.
+    ensure_group()'s own BUSYGROUP tolerance means this can never
+    delete/reset an existing group or its delivery cursor; it is a
+    true no-op whenever a group already exists.
+    """
+    print(f"[WORKER] NOGROUP detected during {context}: {e} -- stream/group may have been deleted")
+    emit_security_alert(
+        condition="audit_stream_or_group_missing",
+        severity="critical",
+        component="audit-worker",
+        message="Redis stream or consumer group is missing (NOGROUP) -- audit delivery is stalled",
+        metadata={"context": context},
+    )
+
+    if not AuditConfig.WORKER_AUTO_RECREATE_STREAM_ON_NOGROUP:
+        return
+
+    global _last_nogroup_recreate_attempt
+    now = time.monotonic()
+    if now - _last_nogroup_recreate_attempt < AuditConfig.WORKER_NOGROUP_RETRY_BACKOFF_SECONDS:
+        return  # bounded: do not attempt XGROUP CREATE on every single failed read
+    _last_nogroup_recreate_attempt = now
+
+    try:
+        reader.ensure_group()  # BUSYGROUP-tolerant; never touches an existing group's cursor
+    except Exception as recreate_error:  # noqa: BLE001 -- a failed recreate attempt must never crash the worker
+        print(f"[WORKER] auto-recreate attempt failed, will retry: {recreate_error}")
+        return
+
+    print(f"[WORKER] auto-recreate attempted for stream/group after NOGROUP ({context})")
+    emit_security_alert(
+        condition="audit_stream_or_group_missing_recovered",
+        severity="info",
+        component="audit-worker",
+        message="Automatic stream/group recreation attempted after NOGROUP",
+        metadata={"context": context},
+    )
 
 
 def handle_message(reader: StreamReader, message_id: str, fields: dict) -> bool:
@@ -50,8 +111,24 @@ def handle_message(reader: StreamReader, message_id: str, fields: dict) -> bool:
     traffic. Uses fields["data"] itself, not a re-serialization of
     `event` -- the signature covers the exact transmitted bytes (see
     audit/signing.py).
+
+    Incident (2026-09-16): this used `fields["data"]` (plain dict
+    access), which raises an uncaught KeyError -- crashing the whole
+    worker process -- if a stream entry is missing the `data` field
+    entirely (as opposed to `data` being present but unparseable, which
+    was already handled). The crash-loop that followed contributed to an
+    operator response that destructively deleted the shared audit:events
+    stream. Fixed to `fields.get("data")`: `raw_data` becomes `None`,
+    `json.loads(None)` raises `TypeError` (caught by the existing
+    except-and-retry below, same as any other parse failure), and
+    classify_poison_reason() already has a dedicated `raw_data is None`
+    branch (-> "malformed"/"MissingDataField") that this fix makes
+    reachable via the existing PEL_MAX_DELIVERIES -> quarantine path --
+    no new poison category or code path was needed, only removing the
+    line that crashed before this message could ever reach the
+    mechanism already built for it.
     """
-    raw_data = fields["data"]
+    raw_data = fields.get("data")
     try:
         event = parse_audit_event(raw_data)
     except Exception as e:  # noqa: BLE001 -- any parse failure is retriable via sweep_pending(), never a crash
@@ -146,6 +223,8 @@ def sweep_pending(reader: StreamReader) -> None:
         claimed, poison_entries = reader.claim_stale(AuditConfig.CONSUMER_NAME)
     except Exception as e:  # noqa: BLE001 -- a Redis blip here must never kill the worker, same "NEVER break core system" contract read_group() below already has
         print(f"[WORKER] pending-entry sweep failed, will retry: {e}")
+        if _is_nogroup_error(e):
+            _handle_nogroup(reader, e, context="pending-entry sweep")
         return
 
     for message_id, fields, delivery_attempts in poison_entries:
@@ -188,6 +267,15 @@ def run(max_iterations=None):
             # kill the whole worker process, but keep it visible instead
             # of silently swallowed.
             print(f"[WORKER] read_group failed, will retry: {e}")
+            if _is_nogroup_error(e):
+                _handle_nogroup(reader, e, context="read_group")
+                # Incident (2026-09-16): previously no backoff at all on
+                # this path -- a worker stuck on a missing stream/group
+                # polled Redis as fast as exceptions could be thrown and
+                # caught. Bounded, and only applied for this specific
+                # condition; the normal idle-stream/timeout path above
+                # is unaffected.
+                time.sleep(AuditConfig.WORKER_NOGROUP_RETRY_BACKOFF_SECONDS)
             response = []
         for _stream_name, messages in response:
             for message_id, fields in messages:

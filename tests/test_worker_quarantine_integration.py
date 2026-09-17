@@ -353,3 +353,97 @@ def test_real_requarantine_after_crash_before_ack_is_idempotent(
 
     pending_after = real_redis_stream.redis.xpending(TEST_STREAM, TEST_GROUP)
     assert pending_after["pending"] == 0
+
+
+# ---------------------------------------------------------------------------
+# 4. Incident (2026-09-16) regression, real backends: a stream entry
+#    missing the `data` field entirely (as opposed to `data` present but
+#    unparseable) previously raised an uncaught KeyError in
+#    handle_message() and crashed the whole worker process. Full pipeline
+#    proof against a real Redis PEL and real MySQL: does not crash, does
+#    not ack prematurely, and lands in quarantine with the exact
+#    "malformed"/"MissingDataField" classification.
+# ---------------------------------------------------------------------------
+
+def test_real_missing_data_field_is_quarantined_not_crashed(
+    real_redis_stream, real_mysql_url, monkeypatch,
+):
+    import worker.main as worker_module
+
+    TestSessionLocal = _session_local(real_mysql_url)
+    monkeypatch.setattr(worker_module, "SessionLocal", TestSessionLocal)
+
+    # The exact incident shape: no "data" field in the stream entry at all.
+    real_redis_stream.redis.xadd(TEST_STREAM, {"sig": "irrelevant-signature"})
+
+    response = real_redis_stream.read_group("worker-a", block=2000)
+    assert response
+    message_id, fields = response[0][1][0]
+    assert "data" not in fields
+
+    # Requirement A: must not raise, must not ack (retriable, same as a
+    # malformed-JSON parse failure).
+    result = worker_module.handle_message(real_redis_stream, message_id, fields)
+    assert result is False
+
+    pending_mid = real_redis_stream.redis.xpending(TEST_STREAM, TEST_GROUP)
+    assert pending_mid["pending"] == 1  # still pending, not acked, not lost
+
+    time.sleep(0.1)
+    MAX_DELIVERIES = 1
+    claimed, poison_entries = real_redis_stream.claim_stale(
+        "worker-b", min_idle_ms=50, max_deliveries=MAX_DELIVERIES,
+    )
+    assert claimed == []
+    assert len(poison_entries) == 1
+    poison_message_id, poison_fields, delivery_attempts = poison_entries[0]
+
+    # Requirement E: durable quarantine write must happen before ack --
+    # already enforced by quarantine_and_ack() itself; confirmed here via
+    # the same real-backend proof style as test 1/2/3 above.
+    quarantined = worker_module.quarantine_and_ack(
+        real_redis_stream, poison_message_id, poison_fields, delivery_attempts,
+    )
+    assert quarantined is True
+
+    pending_after = real_redis_stream.redis.xpending(TEST_STREAM, TEST_GROUP)
+    assert pending_after["pending"] == 0
+
+    with TestSessionLocal() as session:
+        from db.models import QuarantinedAuditEvent
+
+        row = session.get(QuarantinedAuditEvent, poison_message_id)
+        assert row is not None
+        assert row.raw_data is None
+        assert row.failure_category == "malformed"
+        assert row.failure_detail == "MissingDataField"
+        assert row.delivery_attempts == MAX_DELIVERIES
+
+
+def test_real_processing_continues_after_missing_data_poison_entry(
+    real_redis_stream, real_mysql_url, monkeypatch,
+):
+    """Requirement C, real backends: a missing-`data` poison entry must
+    not prevent a subsequent, independent, well-formed event from being
+    durably persisted through the normal (non-poison) path in the same
+    worker."""
+    import worker.main as worker_module
+
+    TestSessionLocal = _session_local(real_mysql_url)
+    monkeypatch.setattr(worker_module, "SessionLocal", TestSessionLocal)
+
+    real_redis_stream.redis.xadd(TEST_STREAM, {"sig": "irrelevant"})  # poison: no "data"
+    good_event_id = f"e2-after-poison-{uuid.uuid4()}"
+    real_redis_stream.redis.xadd(TEST_STREAM, {"data": _valid_payload(good_event_id)})
+
+    response = real_redis_stream.read_group("worker-a", block=2000, count=10)
+    messages = response[0][1]
+    assert len(messages) == 2
+
+    results = [worker_module.handle_message(real_redis_stream, mid, f) for mid, f in messages]
+    assert results == [False, True]  # poison stays pending, good event persists and acks
+
+    with TestSessionLocal() as session:
+        from db.models import AuditEventRecord
+
+        assert session.get(AuditEventRecord, good_event_id) is not None

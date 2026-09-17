@@ -114,6 +114,65 @@ def test_sweep_pending_quarantines_then_acks_poison_entries(capsys):
     assert "quarantined" in captured.out
 
 
+def test_sweep_pending_quarantines_missing_data_field_poison_entry(capsys):
+    """Incident (2026-09-16) regression, requirement B: a poison entry
+    whose `fields` dict has no "data" key at all (the exact incident
+    shape) must be quarantined through the same durable path as a
+    malformed-JSON entry, not crash sweep_pending() or the worker.
+    QuarantineSink itself is real here (not mocked) so
+    classify_poison_reason()'s dedicated `raw_data is None` branch
+    ("malformed"/"MissingDataField") is genuinely exercised end-to-end,
+    only the DB session is mocked."""
+    reader = MagicMock()
+    reader.claim_stale.return_value = ([], [("9-0", {}, 5)])  # no "data" key
+
+    mock_db = MagicMock()
+    written = {}
+
+    def _capture_add(record):
+        written["record"] = record
+
+    mock_db.add.side_effect = _capture_add
+
+    with patch("worker.main.SessionLocal", return_value=mock_db):
+        worker.sweep_pending(reader)  # must not raise
+
+    reader.ack.assert_called_once_with("9-0")
+    mock_db.commit.assert_called_once()
+    record = written["record"]
+    assert record.stream_message_id == "9-0"
+    assert record.raw_data is None
+    assert record.failure_category == "malformed"
+    assert record.failure_detail == "MissingDataField"
+
+    captured = capsys.readouterr()
+    assert "POISON MESSAGE" in captured.out
+    assert "9-0" in captured.out
+
+
+def test_sweep_pending_continues_to_next_entry_after_missing_data_poison(capsys):
+    """Requirement C: one poison entry missing `data` must not prevent a
+    second, independent poison entry (malformed JSON, the pre-existing
+    case) from also being quarantined in the same sweep -- proving the
+    fix doesn't just avoid a crash, it lets the loop keep going."""
+    reader = MagicMock()
+    reader.claim_stale.return_value = (
+        [],
+        [("9-0", {}, 5), ("10-0", {"data": "not json"}, 5)],
+    )
+
+    with patch("worker.main.SessionLocal") as mock_session_local:
+        mock_session_local.return_value = MagicMock()
+        worker.sweep_pending(reader)  # must not raise
+
+    assert reader.ack.call_count == 2
+    reader.ack.assert_any_call("9-0")
+    reader.ack.assert_any_call("10-0")
+
+    captured = capsys.readouterr()
+    assert captured.out.count("POISON MESSAGE") == 2
+
+
 def test_sweep_pending_does_not_ack_poison_entry_when_quarantine_write_fails():
     """V2-002 core requirement: quarantine failure must never silently
     ack (and thereby discard) the original poison message."""

@@ -70,6 +70,38 @@ def test_handle_message_does_not_ack_on_parse_failure():
     reader.ack.assert_not_called()
 
 
+# ---------------------------------------------------------------------------
+# Incident (2026-09-16): a stream entry missing the `data` field entirely
+# (not merely unparseable) crashed the whole worker process via an
+# uncaught KeyError on `fields["data"]`. See worker/main.py's updated
+# handle_message() docstring for the full incident account. Requirement A.
+# ---------------------------------------------------------------------------
+
+def test_handle_message_missing_data_field_does_not_crash_worker():
+    """The exact incident shape: `fields` has no "data" key at all (as
+    opposed to {"data": "not-json"}, already covered above). Must behave
+    identically to a parse failure -- no exception escapes, message stays
+    unacked, retriable -- never a crashed process."""
+    reader = MagicMock()
+
+    result = worker.handle_message(reader, "1-0", {})  # no "data" key
+
+    assert result is False
+    reader.ack.assert_not_called()
+
+
+def test_handle_message_missing_data_field_with_other_fields_present_still_safe():
+    """A missing `data` field alongside an otherwise-normal fields dict
+    (e.g. `sig` present) must not crash either -- the bug was specifically
+    about `data`, not about the fields dict being empty."""
+    reader = MagicMock()
+
+    result = worker.handle_message(reader, "1-0", {"sig": "some-signature"})
+
+    assert result is False
+    reader.ack.assert_not_called()
+
+
 def test_handle_message_does_not_ack_on_db_failure():
     reader = MagicMock()
     mock_sink_instance = MagicMock()
