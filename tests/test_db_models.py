@@ -1,4 +1,7 @@
-"""PR4.2 regression tests: the audit_events table (db/models.py)."""
+"""PR4.2 regression tests: the audit_events table (db/models.py).
+
+Developer: Manish Kumar <manish@omnibioai.org>
+"""
 from datetime import datetime
 
 import pytest
@@ -8,6 +11,7 @@ from db.models import AuditEventRecord
 
 
 def test_audit_event_record_inserts_successfully(db_session):
+    """Persist and reload an AuditEventRecord with its service and decision intact."""
     record = AuditEventRecord(
         event_id="evt-1",
         timestamp=datetime(2026, 1, 1, 12, 0, 0),
@@ -28,6 +32,7 @@ def test_audit_event_record_inserts_successfully(db_session):
 
 
 def test_audit_event_record_preserves_json_context(db_session):
+    """Round-trip a nested JSON context object through the context column unchanged."""
     context = {"ip": "1.2.3.4", "nested": {"a": [1, 2, 3]}}
     record = AuditEventRecord(
         event_id="evt-2",
@@ -44,6 +49,7 @@ def test_audit_event_record_preserves_json_context(db_session):
 
 
 def test_audit_event_record_created_at_defaults(db_session):
+    """Default created_at to a non-null value when it is not explicitly set."""
     record = AuditEventRecord(
         event_id="evt-3",
         timestamp=datetime(2026, 1, 1, 12, 0, 0),

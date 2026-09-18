@@ -1,7 +1,10 @@
 """PR4.3: GET /audit/events -- the read-only audit query API. HTTP-level
 tests via the audit_events_client fixture (real SQLite DB + real FastAPI
 dependency injection, not mocks); SQL-level filter/order/pagination
-correctness is covered separately in tests/test_audit_query_service.py."""
+correctness is covered separately in tests/test_audit_query_service.py.
+
+Developer: Manish Kumar <manish@omnibioai.org>
+"""
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
@@ -15,16 +18,19 @@ SECRET = "test-secret"
 
 
 def _token(**claims):
+    """Sign an HS256 test token with the shared test secret, applying any extra claims."""
     return jwt.encode(claims, SECRET, algorithm="HS256")
 
 
 def _auth_headers(**claims):
+    """Build an Authorization header carrying a token for the given roles."""
     roles = claims.pop("roles", ["platform_admin"])
     token = _token(sub="1", roles=roles, **claims)
     return {"Authorization": f"Bearer {token}"}
 
 
 def _seed(session_factory, count=3):
+    """Insert the given number of AuditEventRecord rows into the test database."""
     db = session_factory()
     for i in range(count):
         db.add(
@@ -48,6 +54,7 @@ def _seed(session_factory, count=3):
 # ---------------------------------------------------------------------------
 
 def test_platform_admin_can_query_audit_events(audit_events_client):
+    """Return seeded events to a platform admin from GET /audit/events."""
     client, sessions = audit_events_client
     _seed(sessions, count=1)
 
@@ -58,6 +65,7 @@ def test_platform_admin_can_query_audit_events(audit_events_client):
 
 
 def test_missing_auth_header_returns_401(audit_events_client):
+    """Reject a request with no Authorization header with 401."""
     client, _ = audit_events_client
 
     resp = client.get("/audit/events")
@@ -66,6 +74,7 @@ def test_missing_auth_header_returns_401(audit_events_client):
 
 
 def test_non_platform_admin_receives_403(audit_events_client):
+    """Reject a non-platform-admin role with 403."""
     client, sessions = audit_events_client
     _seed(sessions, count=1)
 
@@ -94,6 +103,7 @@ def test_org_admin_never_sees_audit_data_even_with_valid_token(audit_events_clie
 # ---------------------------------------------------------------------------
 
 def test_response_contains_expected_fields(audit_events_client):
+    """Return exactly the documented response and item fields, including integrity_status."""
     client, sessions = audit_events_client
     _seed(sessions, count=1)
 
@@ -122,6 +132,7 @@ def test_response_contains_expected_fields(audit_events_client):
 
 
 def test_pagination_works(audit_events_client):
+    """Page results according to the page and page_size query parameters."""
     client, sessions = audit_events_client
     _seed(sessions, count=5)
 
@@ -138,6 +149,7 @@ def test_pagination_works(audit_events_client):
 
 
 def test_empty_result_returns_empty_items_not_error(audit_events_client):
+    """Return an empty items list and zero total instead of an error when there are no events."""
     client, _ = audit_events_client
 
     resp = client.get("/audit/events", headers=_auth_headers())
@@ -150,6 +162,7 @@ def test_empty_result_returns_empty_items_not_error(audit_events_client):
 
 
 def test_newest_events_appear_first(audit_events_client):
+    """Order the /audit/events response with the newest event first."""
     client, sessions = audit_events_client
     _seed(sessions, count=3)
 
@@ -165,6 +178,7 @@ def test_newest_events_appear_first(audit_events_client):
 # ---------------------------------------------------------------------------
 
 def test_filter_by_service_via_query_param(audit_events_client):
+    """Filter results to the requested service."""
     client, sessions = audit_events_client
     db = sessions()
     db.add(AuditEventRecord(
@@ -188,6 +202,7 @@ def test_filter_by_service_via_query_param(audit_events_client):
 
 
 def test_filter_by_decision_and_event_type_via_query_params(audit_events_client):
+    """Filter results by decision and event_type together."""
     client, sessions = audit_events_client
     db = sessions()
     db.add(AuditEventRecord(
@@ -213,6 +228,7 @@ def test_filter_by_decision_and_event_type_via_query_params(audit_events_client)
 
 
 def test_filter_by_integrity_status_via_query_param(audit_events_client):
+    """Filter results to the requested integrity_status."""
     client, sessions = audit_events_client
     db = sessions()
     db.add(AuditEventRecord(
@@ -237,6 +253,7 @@ def test_filter_by_integrity_status_via_query_param(audit_events_client):
 
 
 def test_response_serializes_tenant_fields(audit_events_client):
+    """Include organization_id and tenant_scope in the serialized item."""
     client, sessions = audit_events_client
     db = sessions()
     db.add(AuditEventRecord(
@@ -255,6 +272,7 @@ def test_response_serializes_tenant_fields(audit_events_client):
 # ---------------------------------------------------------------------------
 
 def test_health_endpoint_still_works(audit_events_client):
+    """Keep /health working alongside the /audit/events route."""
     client, _ = audit_events_client
     resp = client.get("/health")
     assert resp.status_code == 200
@@ -268,6 +286,8 @@ def test_health_endpoint_still_works(audit_events_client):
 # ---------------------------------------------------------------------------
 
 def test_database_failure_is_normalized_without_internal_details():
+    """Return a 503 with a generic AUDIT_SOURCE_UNAVAILABLE code, never the raw SQL or the
+    underlying exception's text."""
     with patch(
         "api.routes_audit_events.audit_query_service.list_audit_events",
         side_effect=OperationalError("SELECT audit_events", {}, Exception("db.internal")),

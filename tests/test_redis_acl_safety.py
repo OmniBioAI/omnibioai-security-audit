@@ -20,6 +20,8 @@ Two tiers:
     production-adjacent Redis port) is refused outright even if
     something upstream ever tried to hand it to this fixture. Skipped
     automatically if the `docker` CLI is unavailable.
+
+Developer: Manish Kumar <manish@omnibioai.org>
 """
 from __future__ import annotations
 
@@ -58,40 +60,53 @@ from scripts.redis_acl_safety import (
 
 
 class TestNormalizeCommand:
+    """Validate _normalize_command's uppercasing, subcommand-family two-token normalization,
+    bytes/str equivalence, whitespace stripping, and rejection of an empty command; and
+    _safe_repr_command's exclusion of argument values."""
+
     def test_simple_command_uppercased(self):
+        """Uppercase a simple command regardless of its input casing."""
         assert _normalize_command(["ping"]) == ("PING",)
         assert _normalize_command(["PiNg"]) == ("PING",)
 
     def test_subcommand_family_normalized_to_two_tokens(self):
+        """Normalize a subcommand-family command to its two-token (COMMAND, SUBCOMMAND) form."""
         assert _normalize_command(["config", "set", "maxmemory", "0"]) == ("CONFIG", "SET")
         assert _normalize_command(["ACL", "setuser", "x"]) == ("ACL", "SETUSER")
         assert _normalize_command(["xgroup", "CREATE", "s", "g"]) == ("XGROUP", "CREATE")
         assert _normalize_command(["script", "flush"]) == ("SCRIPT", "FLUSH")
 
     def test_non_subcommand_family_stays_one_token_even_with_extra_args(self):
+        """Keep a non-subcommand-family command to a single token even with extra arguments."""
         assert _normalize_command(["GET", "somekey"]) == ("GET",)
         assert _normalize_command(["SET", "k", "v"]) == ("SET",)
 
     def test_bytes_args_normalized_same_as_str(self):
+        """Normalize bytes-typed command arguments the same as their string equivalents."""
         assert _normalize_command([b"FlUsHaLl"]) == ("FLUSHALL",)
         assert _normalize_command([b"config", b"SET"]) == ("CONFIG", "SET")
 
     def test_whitespace_stripped(self):
+        """Strip surrounding whitespace from a command token before normalizing."""
         assert _normalize_command([" flushall "]) == ("FLUSHALL",)
 
     def test_mixed_case_variations_all_equal(self):
+        """Normalize every case variation of a command to the same tuple."""
         variants = ["FLUSHALL", "flushall", "FlUsHaLl", "fLUSHALL"]
         assert len({_normalize_command([v]) for v in variants}) == 1
 
     def test_empty_command_rejected(self):
+        """Raise ProhibitedCommandError for an empty command list."""
         with pytest.raises(ProhibitedCommandError):
             _normalize_command([])
 
     def test_empty_string_command_rejected(self):
+        """Raise ProhibitedCommandError for a command list containing only an empty string."""
         with pytest.raises(ProhibitedCommandError):
             _normalize_command([""])
 
     def test_safe_repr_never_includes_extra_args(self):
+        """Render only the command name in the safe repr, never its argument values."""
         assert _safe_repr_command(["SET", "k", "supersecretvalue"]) == "SET"
         assert "supersecretvalue" not in _safe_repr_command(["SET", "k", "supersecretvalue"])
         assert _safe_repr_command(["ACL", "SETUSER", "x", ">password"]) == "ACL SETUSER"
@@ -104,15 +119,22 @@ class TestNormalizeCommand:
 
 
 class TestProductionValidatorAllowlist:
+    """Validate ProductionValidator's allowlist: exactly which commands it permits, which it denies
+    as merely prohibited versus specifically dangerous, and that error messages never leak
+    argument values."""
+
     @pytest.fixture
     def gate(self):
+        """Provide a fresh ProductionValidator."""
         return ProductionValidator()
 
     @pytest.mark.parametrize("cmd", [["PING"], ["ping"], ["ACL", "WHOAMI"], ["acl", "whoami"], ["INFO"], ["info"]])
     def test_allowed_commands_pass(self, gate, cmd):
+        """Authorize every allowlisted command without raising."""
         gate.authorize(cmd)  # must not raise
 
     def test_allowlist_is_exactly_the_documented_minimum(self):
+        """Pin the production allowlist to exactly PING, ACL WHOAMI, and INFO."""
         assert PRODUCTION_ALLOWED_COMMANDS == frozenset({("PING",), ("ACL", "WHOAMI"), ("INFO",)})
 
     @pytest.mark.parametrize("cmd", [
@@ -120,6 +142,7 @@ class TestProductionValidatorAllowlist:
         ["XLEN", "s"], ["SCAN", "0"], ["KEYS", "*"], ["DBSIZE"], ["CLIENT", "LIST"],
     ])
     def test_non_allowlisted_harmless_looking_commands_still_denied(self, gate, cmd):
+        """Deny a harmless-looking but non-allowlisted command."""
         with pytest.raises(ProhibitedCommandError):
             gate.authorize(cmd)
 
@@ -132,18 +155,23 @@ class TestProductionValidatorAllowlist:
         ["RESTORE-ASKING"], ["SWAPDB", "0", "1"], ["REPLICAOF", "no", "one"], ["SLAVEOF", "no", "one"],
     ])
     def test_dangerous_commands_denied_as_dangerous_specifically(self, gate, cmd):
+        """Deny a destructive command with DangerousCommandError specifically, not just a generic
+        denial."""
         with pytest.raises(DangerousCommandError):
             gate.authorize(cmd)
 
     def test_dangerous_error_is_a_prohibited_command_error(self, gate):
+        """Raise DangerousCommandError as a subtype of ProhibitedCommandError."""
         with pytest.raises(ProhibitedCommandError):
             gate.authorize(["FLUSHALL"])
 
     def test_bytes_command_cannot_bypass_dangerous_check(self, gate):
+        """Deny a dangerous command given as bytes the same as its string form."""
         with pytest.raises(DangerousCommandError):
             gate.authorize([b"FLUSHALL"])
 
     def test_subcommand_split_cannot_bypass_dangerous_check(self, gate):
+        """Deny a dangerous subcommand regardless of how its tokens are split."""
         # A caller cannot dodge the ("CONFIG", "SET") tuple by passing the
         # subcommand as a separate positional differently-cased token.
         with pytest.raises(DangerousCommandError):
@@ -152,6 +180,7 @@ class TestProductionValidatorAllowlist:
             gate.authorize(["config", "SET"])
 
     def test_error_message_never_contains_argument_values(self, gate):
+        """Keep argument values out of the error message raised for a denied command."""
         with pytest.raises(ProhibitedCommandError) as excinfo:
             gate.authorize(["SET", "k", "topsecretvalue123"])
         assert "topsecretvalue123" not in str(excinfo.value)
@@ -163,32 +192,43 @@ class TestProductionValidatorAllowlist:
 
 
 class TestClassifyEnvironmentWithoutRedis:
+    """Validate classify_environment and DisposableAttestation's construction-time checks without a
+    real Redis connection: production-port detection, the unknown default, and rejection of
+    malformed or unreachable attestations."""
+
     def test_production_port_always_classified_production_even_with_no_attestation(self):
+        """Classify the production port as PRODUCTION even with no attestation supplied."""
         assert classify_environment(host="redis", port=PRODUCTION_PORT, attestation=None) is RedisEnvironment.PRODUCTION
 
     def test_unknown_when_no_attestation_supplied(self):
+        """Classify a non-production host/port with no attestation as UNKNOWN."""
         # No live probe is even attempted when there's no attestation --
         # a bogus host/port here would still correctly resolve to UNKNOWN.
         assert classify_environment(host="nonexistent.invalid", port=59999, attestation=None) is RedisEnvironment.UNKNOWN
 
     def test_attestation_construction_rejects_production_port(self):
+        """Reject constructing a DisposableAttestation for the production port."""
         with pytest.raises(EnvironmentClassificationError):
             DisposableAttestation(host="redis", port=PRODUCTION_PORT, nonce_key="k", nonce_value="v")
 
     def test_attestation_construction_rejects_empty_nonce(self):
+        """Reject constructing a DisposableAttestation with an empty nonce key and value."""
         with pytest.raises(EnvironmentClassificationError):
             DisposableAttestation(host="localhost", port=16399, nonce_key="", nonce_value="")
 
     def test_attestation_construction_rejects_empty_host(self):
+        """Reject constructing a DisposableAttestation with an empty host."""
         with pytest.raises(EnvironmentClassificationError):
             DisposableAttestation(host="", port=16399, nonce_key="k", nonce_value="v")
 
     def test_mismatched_host_port_attestation_rejected(self):
+        """Reject classifying an environment against an attestation built for a different host/port."""
         attestation = DisposableAttestation(host="127.0.0.1", port=16399, nonce_key="k", nonce_value="v")
         with pytest.raises(EnvironmentClassificationError):
             classify_environment(host="127.0.0.1", port=16400, attestation=attestation)
 
     def test_unreachable_disposable_target_fails_closed_not_disposable(self):
+        """Raise, not silently classify as disposable, when the attested target cannot be reached."""
         # Well-formed attestation, but nothing is actually listening --
         # must raise, never silently fall through to DISPOSABLE.
         attestation = DisposableAttestation(host="127.0.0.1", port=1, nonce_key="k", nonce_value="v")
@@ -196,11 +236,13 @@ class TestClassifyEnvironmentWithoutRedis:
             classify_environment(host="127.0.0.1", port=1, attestation=attestation)
 
     def test_disposable_validator_construction_fails_closed_when_unreachable(self):
+        """Raise when a disposable validator is constructed against an unreachable target."""
         attestation = DisposableAttestation(host="127.0.0.1", port=1, nonce_key="k", nonce_value="v")
         with pytest.raises(EnvironmentClassificationError):
             DisposableValidator(host="127.0.0.1", port=1, attestation=attestation)
 
     def test_negative_test_gate_construction_fails_closed_when_unreachable(self):
+        """Raise when a negative test gate is constructed against an unreachable target."""
         attestation = DisposableAttestation(host="127.0.0.1", port=1, nonce_key="k", nonce_value="v")
         with pytest.raises(EnvironmentClassificationError):
             DisposableNegativeTestGate(host="127.0.0.1", port=1, attestation=attestation)
@@ -213,7 +255,10 @@ class TestClassifyEnvironmentWithoutRedis:
 
 
 class TestAuthenticateProductionGuard:
+    """Validate that authenticate_production refuses to proceed against a non-production port."""
+
     def test_authenticate_production_rejects_non_production_port(self):
+        """Reject authenticate_production when the target port is not the production port."""
         with pytest.raises(EnvironmentClassificationError):
             authenticate_production(
                 host="127.0.0.1", port=16399, username="x", password="y",
@@ -230,6 +275,7 @@ _DOCKER_AVAILABLE = shutil.which("docker") is not None
 
 
 def _run(cmd, **kw):
+    """Run a subprocess command, capturing output and applying a 30-second timeout."""
     return subprocess.run(cmd, capture_output=True, text=True, timeout=30, check=False, **kw)
 
 
@@ -292,6 +338,8 @@ def disposable_redis():
 
 @pytest.fixture
 def attestation(disposable_redis):
+    """Build a DisposableAttestation bound to the disposable Redis container's host, port, and
+    nonce."""
     return DisposableAttestation(
         host=disposable_redis["host"], port=disposable_redis["port"],
         nonce_key=disposable_redis["nonce_key"], nonce_value=disposable_redis["nonce_value"],
@@ -304,11 +352,17 @@ def attestation(disposable_redis):
 
 
 class TestClassifyEnvironmentRealRedis:
+    """Validate classify_environment against a real disposable Redis instance: a valid attestation
+    classifies as disposable, and a wrong nonce key or value fails closed."""
+
     def test_valid_attestation_classified_disposable(self, disposable_redis, attestation):
+        """Classify the disposable container as DISPOSABLE given a valid attestation against it."""
         env = classify_environment(host=disposable_redis["host"], port=disposable_redis["port"], attestation=attestation)
         assert env is RedisEnvironment.DISPOSABLE
 
     def test_wrong_nonce_value_fails_closed(self, disposable_redis):
+        """Fail closed when the attestation's nonce value does not match what is stored on the
+        target."""
         bad = DisposableAttestation(
             host=disposable_redis["host"], port=disposable_redis["port"],
             nonce_key=disposable_redis["nonce_key"], nonce_value="not-the-real-nonce",
@@ -317,6 +371,7 @@ class TestClassifyEnvironmentRealRedis:
             classify_environment(host=disposable_redis["host"], port=disposable_redis["port"], attestation=bad)
 
     def test_wrong_nonce_key_fails_closed(self, disposable_redis):
+        """Fail closed when the attestation's nonce key does not match what is stored on the target."""
         bad = DisposableAttestation(
             host=disposable_redis["host"], port=disposable_redis["port"],
             nonce_key="nonexistent_key_never_set", nonce_value=disposable_redis["nonce_value"],
@@ -403,6 +458,8 @@ class TestIncidentReproductionAndDefense:
         assert sent == ["AUTH"], f"expected only AUTH to have been sent, got {sent!r}"
 
     def test_framework_succeeds_with_correct_credential_and_matching_identity(self, disposable_redis):
+        """Authenticate and run PING against the disposable Redis with the correct credential and
+        matching identity."""
         gate = ProductionValidator()
         session = authenticate(
             host=disposable_redis["host"], port=disposable_redis["port"],
@@ -416,6 +473,7 @@ class TestIncidentReproductionAndDefense:
             session.close()
 
     def test_session_after_close_refuses_further_commands(self, disposable_redis):
+        """Raise when a command is run on a session after it has been closed."""
         gate = ProductionValidator()
         session = authenticate(
             host=disposable_redis["host"], port=disposable_redis["port"],
@@ -434,6 +492,9 @@ class TestIncidentReproductionAndDefense:
 
 
 class TestIdentityMismatchRealRedis:
+    """Validate that an identity mismatch during authentication against real Redis leaves no usable
+    session, sending only AUTH then ACL WHOAMI."""
+
     def test_expected_identity_not_matching_actual_is_hard_failure(self, disposable_redis):
         """Authenticate correctly as redis_monitoring_test, but assert
         the WRONG expected identity -- must be a hard
@@ -450,6 +511,8 @@ class TestIdentityMismatchRealRedis:
             )
 
     def test_mismatch_error_does_not_leave_a_usable_session(self, disposable_redis, monkeypatch):
+        """Send only AUTH then ACL WHOAMI, and raise IdentityMismatchError, when the authenticated
+        identity does not match the expected one."""
         sent = []
         real_execute = redis.Redis.execute_command
 
@@ -475,7 +538,11 @@ class TestIdentityMismatchRealRedis:
 
 
 class TestAuthenticationFailureShapesRealRedis:
+    """Validate authentication failure handling against real Redis: a nonexistent username, a
+    correct credential succeeding, and an unreachable host failing closed."""
+
     def test_nonexistent_username(self, disposable_redis):
+        """Raise AuthenticationFailedError for a username that does not exist on the target."""
         gate = ProductionValidator()
         with pytest.raises(AuthenticationFailedError):
             authenticate(
@@ -486,6 +553,7 @@ class TestAuthenticationFailureShapesRealRedis:
             )
 
     def test_correct_username_correct_password_succeeds(self, disposable_redis):
+        """Authenticate successfully with the correct username and password."""
         gate = ProductionValidator()
         session = authenticate(
             host=disposable_redis["host"], port=disposable_redis["port"],
@@ -496,6 +564,7 @@ class TestAuthenticationFailureShapesRealRedis:
         session.close()
 
     def test_unreachable_host_fails_closed(self):
+        """Raise AuthenticationFailedError, not hang, when the host is unreachable."""
         gate = ProductionValidator()
         with pytest.raises(AuthenticationFailedError):
             authenticate(
@@ -531,7 +600,11 @@ class TestAuthenticationFailureShapesRealRedis:
 
 
 class TestProductionAllowlistEndToEndRealRedis:
+    """Validate the production allowlist end to end against real Redis: an allowed command runs, and
+    FLUSHALL never reaches the wire through a production session."""
+
     def test_allowed_command_runs(self, disposable_redis):
+        """Run an allowlisted command through a production session and get a non-empty result."""
         gate = ProductionValidator()
         session = authenticate(
             host=disposable_redis["host"], port=disposable_redis["port"],
@@ -546,6 +619,7 @@ class TestProductionAllowlistEndToEndRealRedis:
             session.close()
 
     def test_flushall_never_reaches_the_wire_through_production_session(self, disposable_redis, monkeypatch):
+        """Deny FLUSHALL before it ever reaches execute_command through a production session."""
         sent = []
         real_execute = redis.Redis.execute_command
 
@@ -575,6 +649,9 @@ class TestProductionAllowlistEndToEndRealRedis:
 
 
 class TestDisposableDestructiveProofRealRedis:
+    """Validate that a restricted disposable-test identity is denied writes outside its authorized
+    keys, and that the negative test gate cannot be constructed for the production port."""
+
     def test_restricted_identity_denied_flushall_by_redis_itself(self, disposable_redis, attestation):
         """This is the one place a dangerous command is actually sent
         -- through DisposableNegativeTestGate, against a live-verified
@@ -597,6 +674,7 @@ class TestDisposableDestructiveProofRealRedis:
             session.close()
 
     def test_restricted_identity_denied_set_on_unauthorized_key(self, disposable_redis, attestation):
+        """Deny a SET on a key outside the restricted test identity's authorized keyspace."""
         gate = DisposableNegativeTestGate(
             host=disposable_redis["host"], port=disposable_redis["port"], attestation=attestation,
         )
@@ -613,6 +691,8 @@ class TestDisposableDestructiveProofRealRedis:
             session.close()
 
     def test_negative_test_gate_cannot_be_constructed_for_production_port(self, disposable_redis):
+        """Classify the production port as PRODUCTION rather than allowing a negative test gate to
+        target it."""
         # Even with a technically-well-formed attestation pointed at the
         # disposable instance, asking classify_environment to check
         # PRODUCTION_PORT directly must never say DISPOSABLE.
@@ -634,7 +714,11 @@ class TestDisposableDestructiveProofRealRedis:
 
 
 class TestUnknownEnvironmentRealRedis:
+    """Validate that an unknown environment still gets dangerous commands denied by
+    ProductionValidator, and that a missing attestation never implies disposable."""
+
     def test_unknown_environment_with_production_validator_still_denies_dangerous(self, disposable_redis):
+        """Deny a dangerous command even when the environment classifies as unknown."""
         # Simulates a caller that never supplied a DisposableAttestation
         # (environment resolves to UNKNOWN) but still, correctly, uses
         # ProductionValidator for anything of unproven status.
@@ -652,6 +736,8 @@ class TestUnknownEnvironmentRealRedis:
             session.close()
 
     def test_missing_attestation_never_implies_disposable(self):
+        """Classify hosts with no attestation as UNKNOWN, never DISPOSABLE, regardless of how local
+        the host looks."""
         assert classify_environment(host="127.0.0.1", port=16399, attestation=None) is RedisEnvironment.UNKNOWN
         assert classify_environment(host="localhost", port=16399, attestation=None) is RedisEnvironment.UNKNOWN
         assert classify_environment(host="some-test-container", port=16399, attestation=None) is RedisEnvironment.UNKNOWN
@@ -663,7 +749,11 @@ class TestUnknownEnvironmentRealRedis:
 
 
 class TestRawClientBypassRealRedis:
+    """Validate that AuthenticatedSession exposes no way to reach the underlying raw Redis client or
+    its execute_command."""
+
     def test_authenticated_session_exposes_no_public_raw_client_accessor(self, disposable_redis):
+        """Expose only environment, run, and close as AuthenticatedSession's public attributes."""
         gate = ProductionValidator()
         session = authenticate(
             host=disposable_redis["host"], port=disposable_redis["port"],
@@ -683,6 +773,7 @@ class TestRawClientBypassRealRedis:
             session.close()
 
     def test_only_run_and_close_are_the_public_surface(self):
+        """Define run and close as AuthenticatedSession's only public methods."""
         assert AuthenticatedSession.run is not None
         assert AuthenticatedSession.close is not None
         # documents, rather than technically enforces, that this is the

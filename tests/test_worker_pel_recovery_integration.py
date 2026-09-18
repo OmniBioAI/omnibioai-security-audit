@@ -15,6 +15,8 @@ the same still-idle entry can never both succeed.
 Every scenario here uses small min_idle_ms/max_deliveries overrides
 (never the real 30s/5-attempt production defaults, see audit/config.py)
 so this file runs in well under a second, not tens of seconds.
+
+Developer: Manish Kumar <manish@omnibioai.org>
 """
 import json
 import os
@@ -60,6 +62,8 @@ TEST_GROUP = "audit-workers"
 
 
 def _real_backends_available():
+    """Report whether both the configured test-MySQL root URL and test-Redis URL are reachable,
+    returning False when either is unconfigured or unreachable."""
     if TEST_MYSQL_ROOT_URL is None or TEST_REDIS_URL is None:
         return False
     try:
@@ -87,6 +91,8 @@ pytestmark = pytest.mark.skipif(
 
 @pytest.fixture
 def real_redis_stream():
+    """Point the stream reader at an isolated test stream and consumer group, then destroy the group
+    and delete the stream on teardown -- never touches the production audit:events stream."""
     from audit.config import AuditConfig
     from consumers.stream_reader import StreamReader
 
@@ -113,6 +119,8 @@ def real_redis_stream():
 
 @pytest.fixture
 def real_mysql_url():
+    """Create a throwaway database, run the real Alembic migration against it, yield its URL, then
+    drop it."""
     root_engine = create_engine(TEST_MYSQL_ROOT_URL)
     with root_engine.connect() as conn:
         conn.execute(text(f"DROP DATABASE IF EXISTS {TEST_DB_NAME}"))
@@ -141,6 +149,7 @@ def real_mysql_url():
 
 
 def _payload(event_id, **overrides):
+    """Build a valid JSON audit-event payload string for the given event id."""
     payload = {
         "event_id": event_id,
         "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -159,6 +168,7 @@ def _payload(event_id, **overrides):
 
 
 def _session_local(real_mysql_url):
+    """Build a SQLAlchemy sessionmaker bound to the throwaway test-MySQL database."""
     from sqlalchemy.orm import sessionmaker
 
     engine = create_engine(real_mysql_url)
@@ -178,6 +188,8 @@ def _session_local(real_mysql_url):
 def test_real_crash_before_ack_is_reclaimed_by_a_second_worker_and_persisted(
     real_redis_stream, real_mysql_url, monkeypatch,
 ):
+    """Reclaim a message left pending by a crashed worker, then persist it once a second worker
+    processes it, on real Redis and MySQL."""
     import worker.main as worker_module
 
     TestSessionLocal = _session_local(real_mysql_url)
@@ -228,6 +240,7 @@ def test_real_crash_before_ack_is_reclaimed_by_a_second_worker_and_persisted(
 def test_real_concurrent_workers_racing_for_the_same_entry_only_one_wins(
     real_redis_stream, real_mysql_url,
 ):
+    """Let only one of two concurrently reclaiming workers actually claim a given pending entry."""
     event_id = f"p0-race-{uuid.uuid4()}"
     real_redis_stream.redis.xadd(TEST_STREAM, {"data": json.dumps(_payload(event_id))})
 
@@ -267,6 +280,8 @@ def test_real_concurrent_workers_racing_for_the_same_entry_only_one_wins(
 def test_real_transient_persistence_failure_then_reclaim_succeeds(
     real_redis_stream, real_mysql_url, monkeypatch,
 ):
+    """Leave a message pending after a transient persistence failure, then persist it successfully
+    once reclaimed."""
     import worker.main as worker_module
     from consumers.sink import Sink
 
@@ -324,6 +339,7 @@ def test_real_transient_persistence_failure_then_reclaim_succeeds(
 def test_real_duplicate_delivery_after_reclaim_does_not_duplicate_row(
     real_redis_stream, real_mysql_url, monkeypatch,
 ):
+    """Persist exactly one row when a message is redelivered after being reclaimed."""
     import worker.main as worker_module
 
     TestSessionLocal = _session_local(real_mysql_url)
@@ -384,6 +400,8 @@ def test_real_duplicate_delivery_after_reclaim_does_not_duplicate_row(
 def test_real_malformed_event_is_abandoned_after_max_deliveries_not_retried_forever(
     real_redis_stream, real_mysql_url, monkeypatch,
 ):
+    """Quarantine a malformed event once it reaches the maximum delivery count, rather than retrying
+    it forever."""
     import worker.main as worker_module
 
     TestSessionLocal = _session_local(real_mysql_url)

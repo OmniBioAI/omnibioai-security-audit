@@ -1,3 +1,11 @@
+"""Shared pytest fixtures for the security audit test suite: mocked async/sync Redis clients, an
+AuditLogger and StreamReader built against those mocks, and isolated SQLite databases for the
+audit_events table and the /audit/events route. Nothing here opens a real Redis or MySQL
+connection.
+
+Developer: Manish Kumar <manish@omnibioai.org>
+"""
+
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -5,16 +13,19 @@ import pytest
 
 @pytest.fixture
 def mock_async_redis():
+    """Provide an AsyncMock standing in for the async Redis client used by AuditLogger."""
     return AsyncMock()
 
 
 @pytest.fixture
 def mock_sync_redis():
+    """Provide a MagicMock standing in for the sync Redis client used by StreamReader."""
     return MagicMock()
 
 
 @pytest.fixture
 def audit_logger(mock_async_redis):
+    """Build an AuditLogger with Redis patched out, bound to the mocked async Redis client."""
     with patch("audit.logger.redis") as mock_redis_module:
         mock_redis_module.from_url.return_value = mock_async_redis
         from audit.logger import AuditLogger
@@ -25,6 +36,7 @@ def audit_logger(mock_async_redis):
 
 @pytest.fixture
 def stream_reader(mock_sync_redis):
+    """Build a StreamReader with Redis patched out, bound to the mocked sync Redis client."""
     with patch("consumers.stream_reader.redis") as mock_redis_module:
         mock_redis_module.from_url.return_value = mock_sync_redis
         from consumers.stream_reader import StreamReader

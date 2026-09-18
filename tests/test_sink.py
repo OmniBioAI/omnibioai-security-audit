@@ -1,6 +1,9 @@
 """PR4.2 regression tests: Sink now persists to audit_events instead of
 printing (consumers/sink.py). Supersedes the print-based Sink tests that
-used to live in tests/test_processor.py."""
+used to live in tests/test_processor.py.
+
+Developer: Manish Kumar <manish@omnibioai.org>
+"""
 from datetime import datetime, timezone
 
 from consumers.sink import Sink
@@ -8,6 +11,7 @@ from db.models import AuditEventRecord
 
 
 def _event(event_id="evt-1", **overrides):
+    """Build a parsed AuditEvent for the sink tests, applying any field overrides."""
     payload = {
         "event_id": event_id,
         "timestamp": datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc),
@@ -26,6 +30,7 @@ def _event(event_id="evt-1", **overrides):
 
 
 def test_sink_write_persists_event(db_session):
+    """Persist an event with its service and user_id intact."""
     sink = Sink(db_session)
     result = sink.write(_event())
 
@@ -37,6 +42,7 @@ def test_sink_write_persists_event(db_session):
 
 
 def test_sink_write_persists_first_class_tenant(db_session):
+    """Persist organization_id and tenant_scope as first-class columns."""
     Sink(db_session).write(_event(organization_id="org-7", tenant_scope="organization"))
     fetched = db_session.get(AuditEventRecord, "evt-1")
     assert fetched.organization_id == "org-7"
@@ -44,6 +50,8 @@ def test_sink_write_persists_first_class_tenant(db_session):
 
 
 def test_sink_legacy_event_defaults_to_unknown_tenant(db_session):
+    """Default a legacy event with no tenant fields to organization_id=None and
+    tenant_scope=unknown."""
     Sink(db_session).write(_event())
     fetched = db_session.get(AuditEventRecord, "evt-1")
     assert fetched.organization_id is None
@@ -51,6 +59,7 @@ def test_sink_legacy_event_defaults_to_unknown_tenant(db_session):
 
 
 def test_sink_write_preserves_context(db_session):
+    """Persist a nested context object unchanged."""
     sink = Sink(db_session)
     sink.write(_event(context={"a": 1, "b": {"c": 2}}))
 
@@ -97,6 +106,7 @@ def test_sink_write_handles_optional_fields_missing(db_session):
 # ---------------------------------------------------------------------------
 
 def test_sink_write_persists_explicit_valid_status(db_session):
+    """Persist an explicit valid integrity_status."""
     sink = Sink(db_session)
     sink.write(_event(integrity_status="valid"))
 
@@ -105,6 +115,7 @@ def test_sink_write_persists_explicit_valid_status(db_session):
 
 
 def test_sink_write_persists_explicit_invalid_status(db_session):
+    """Persist an explicit invalid integrity_status."""
     sink = Sink(db_session)
     sink.write(_event(integrity_status="invalid"))
 
@@ -113,6 +124,7 @@ def test_sink_write_persists_explicit_invalid_status(db_session):
 
 
 def test_sink_write_persists_explicit_unsigned_status(db_session):
+    """Persist an explicit unsigned integrity_status."""
     sink = Sink(db_session)
     sink.write(_event(integrity_status="unsigned"))
 

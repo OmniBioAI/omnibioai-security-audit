@@ -13,6 +13,8 @@ file must be updated to match, and its drift would surface here as a
 sudden validation/assertion failure the next time both repos' test suites
 are run -- which is the whole point of encoding the contract as an
 executable fixture instead of only as prose in a report.
+
+Developer: Manish Kumar <manish@omnibioai.org>
 """
 import json
 import uuid
@@ -52,6 +54,8 @@ def _gateway_shaped_payload(**overrides) -> dict:
 # ---------------------------------------------------------------------------
 
 def test_gateway_request_event_parses_and_persists(db_session):
+    """Parse a gateway-shaped request event and persist it with its service, event_type, and context
+    intact."""
     raw = _gateway_shaped_payload(
         event_type="request",
         user_id="u1",

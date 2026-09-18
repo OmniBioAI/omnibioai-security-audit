@@ -7,6 +7,8 @@ timestamp) into their JSON-safe form (ISO-8601 string) before json.dumps()
 ever sees them. Tests that assert xadd is called supply a mock event whose
 .model_dump() returns fully JSON-serializable data; tests that need to
 exercise the real serializer construct a real AuditEvent.
+
+Developer: Manish Kumar <manish@omnibioai.org>
 """
 import json
 from datetime import datetime
@@ -44,6 +46,7 @@ def _serializable_event(service="auth", event_type="login", **extra):
 
 @pytest.mark.asyncio
 async def test_log_writes_to_redis_stream(audit_logger):
+    """Write the event to the configured Redis stream via XADD, carrying its service and decision."""
     logger, mock_redis = audit_logger
     mock_redis.xadd = AsyncMock()
 
@@ -61,6 +64,7 @@ async def test_log_writes_to_redis_stream(audit_logger):
 
 @pytest.mark.asyncio
 async def test_log_passes_maxlen_and_approximate(audit_logger):
+    """Cap the stream at the configured max length using approximate trimming."""
     logger, mock_redis = audit_logger
     mock_redis.xadd = AsyncMock()
 
@@ -75,6 +79,7 @@ async def test_log_passes_maxlen_and_approximate(audit_logger):
 
 @pytest.mark.asyncio
 async def test_log_uses_config_stream_name(audit_logger):
+    """Write to the stream name configured in AuditConfig."""
     logger, mock_redis = audit_logger
     mock_redis.xadd = AsyncMock()
 
@@ -87,6 +92,7 @@ async def test_log_uses_config_stream_name(audit_logger):
 
 @pytest.mark.asyncio
 async def test_log_event_includes_all_fields(audit_logger):
+    """Include user_id, trace_id, and context in the stored stream entry."""
     logger, mock_redis = audit_logger
     mock_redis.xadd = AsyncMock()
 
@@ -176,6 +182,7 @@ async def test_log_real_event_id_survives_serialization(audit_logger):
 
 @pytest.mark.asyncio
 async def test_log_serializes_first_class_tenant_in_signed_payload(audit_logger):
+    """Store organization_id and tenant_scope as first-class fields in the signed payload."""
     logger, mock_redis = audit_logger
     mock_redis.xadd = AsyncMock()
     await logger.log(AuditEvent(
@@ -189,6 +196,7 @@ async def test_log_serializes_first_class_tenant_in_signed_payload(audit_logger)
 
 @pytest.mark.asyncio
 async def test_tenant_field_is_covered_by_signature(audit_logger):
+    """Cover the tenant fields by the event signature so tampering with them invalidates it."""
     logger, mock_redis = audit_logger
     mock_redis.xadd = AsyncMock()
     await logger.log(AuditEvent(

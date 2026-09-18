@@ -5,6 +5,8 @@ the actual contract that matters: alerts carry the right shape, no
 PHI/credentials leak into metadata by construction, repeated failures
 dedupe instead of storming, a broken sink never propagates, and a
 recovery condition always gets through.
+
+Developer: Manish Kumar <manish@omnibioai.org>
 """
 import json
 
@@ -20,12 +22,15 @@ from audit.security_alerts import (
 
 @pytest.fixture(autouse=True)
 def _clean_dedup_state():
+    """Reset the alert deduplication state before and after every test."""
     _reset_dedup_state_for_tests()
     yield
     _reset_dedup_state_for_tests()
 
 
 class RecordingSink:
+    """Record every alert sent to it for later assertion."""
+
     def __init__(self):
         self.sent = []
 
@@ -34,11 +39,15 @@ class RecordingSink:
 
 
 class RaisingSink:
+    """Simulate an alert backend outage by raising on every send."""
+
     def send(self, alert: SecurityAlert) -> None:
         raise RuntimeError("simulated alert backend outage")
 
 
 def test_alert_carries_condition_severity_component_timestamp():
+    """Attach the condition, severity, component, and an auto-generated timestamp to the emitted
+    alert and hand it to the sink."""
     sink = RecordingSink()
     alert = emit_security_alert(
         condition="integrity_verification_failed",
@@ -57,6 +66,8 @@ def test_alert_carries_condition_severity_component_timestamp():
 
 
 def test_invalid_severity_falls_back_to_warning_not_dropped():
+    """Fall back to warning severity, without dropping the alert, for an unrecognized severity
+    value."""
     sink = RecordingSink()
     alert = emit_security_alert(
         condition="x", severity="not-a-real-severity", component="c", message="m", sink=sink,
@@ -83,6 +94,8 @@ def test_metadata_never_includes_raw_row_content_by_construction():
 
 
 def test_repeated_identical_condition_is_deduped_within_window():
+    """Suppress a repeated identical condition within the dedup window, delivering only the first
+    alert."""
     sink = RecordingSink()
     first = emit_security_alert(condition="poison_event_quarantined", severity="warning",
                                  component="audit-worker", message="m", sink=sink, _now=1000.0)
@@ -95,6 +108,7 @@ def test_repeated_identical_condition_is_deduped_within_window():
 
 
 def test_dedup_window_expiry_allows_a_new_alert():
+    """Deliver a new alert for the same condition once the dedup window has expired."""
     sink = RecordingSink()
     emit_security_alert(condition="c", severity="warning", component="comp", message="m",
                          sink=sink, _now=1000.0, dedup_window_seconds=300)
@@ -105,6 +119,8 @@ def test_dedup_window_expiry_allows_a_new_alert():
 
 
 def test_different_components_are_not_deduped_against_each_other():
+    """Deliver alerts for the same condition on different components independently, without deduping
+    across them."""
     sink = RecordingSink()
     a = emit_security_alert(condition="c", severity="warning", component="worker", message="m", sink=sink, _now=1.0)
     b = emit_security_alert(condition="c", severity="warning", component="retention-cleanup", message="m", sink=sink, _now=1.0)
@@ -114,6 +130,7 @@ def test_different_components_are_not_deduped_against_each_other():
 
 
 def test_recovery_condition_bypasses_dedup():
+    """Deliver a recovery alert even while its failure condition is still within the dedup window."""
     sink = RecordingSink()
     emit_security_alert(condition="backup_failed", severity="critical", component="backup", message="m",
                          sink=sink, _now=1.0)
@@ -126,18 +143,21 @@ def test_recovery_condition_bypasses_dedup():
 
 
 def test_broken_sink_never_raises_and_alert_is_still_returned():
+    """Return the alert object without raising when the sink itself raises."""
     alert = emit_security_alert(condition="c", severity="warning", component="comp", message="m",
                                  sink=RaisingSink())
     assert alert is not None  # emission was attempted, not silently no-op'd
 
 
 def test_broken_sink_failure_is_itself_observable_on_stderr(capsys):
+    """Report a broken sink's failure on stderr so the emission failure itself is observable."""
     emit_security_alert(condition="c", severity="warning", component="comp", message="m", sink=RaisingSink())
     captured = capsys.readouterr()
     assert "SECURITY-ALERT-EMISSION-FAILED" in captured.err
 
 
 def test_default_stdout_sink_prints_json_line(capsys):
+    """Print a [SECURITY-ALERT]-prefixed JSON line to stdout with the default sink."""
     emit_security_alert(condition="c", severity="info", component="comp", message="m")
     captured = capsys.readouterr()
     assert "[SECURITY-ALERT]" in captured.out
@@ -147,6 +167,7 @@ def test_default_stdout_sink_prints_json_line(capsys):
 
 
 def test_file_sink_writes_jsonl(tmp_path):
+    """Append one JSON line per alert to the configured file sink."""
     path = tmp_path / "alerts.jsonl"
     sink = FileAlertSink(path)
     emit_security_alert(condition="a", severity="warning", component="comp", message="m1", sink=sink)
@@ -158,6 +179,7 @@ def test_file_sink_writes_jsonl(tmp_path):
 
 
 def test_env_configured_file_sink_used_when_no_explicit_sink_given(tmp_path, monkeypatch):
+    """Write to the file named by AUDIT_ALERT_LOG_FILE when no explicit sink is given."""
     log_file = tmp_path / "alerts.jsonl"
     monkeypatch.setenv("AUDIT_ALERT_LOG_FILE", str(log_file))
     emit_security_alert(condition="c", severity="warning", component="comp", message="m")
@@ -166,6 +188,7 @@ def test_env_configured_file_sink_used_when_no_explicit_sink_given(tmp_path, mon
 
 
 def test_stdout_sink_used_when_no_env_configured(tmp_path, monkeypatch, capsys):
+    """Fall back to the stdout sink when AUDIT_ALERT_LOG_FILE is unset."""
     monkeypatch.delenv("AUDIT_ALERT_LOG_FILE", raising=False)
     emit_security_alert(condition="c", severity="warning", component="comp", message="m")
     assert "[SECURITY-ALERT]" in capsys.readouterr().out

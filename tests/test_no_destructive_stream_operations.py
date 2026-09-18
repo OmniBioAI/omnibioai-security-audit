@@ -25,6 +25,8 @@ only exists to delete/trim/flush Redis keys has no legitimate purpose
 in this codebase's operational paths, so its mere presence is the
 violation -- no attempt is made to reason about which specific key it
 might target.
+
+Developer: Manish Kumar <manish@omnibioai.org>
 """
 from __future__ import annotations
 
@@ -53,6 +55,7 @@ _KEYS_METHOD_PATTERN = re.compile(r"\.redis\.keys\s*\(")
 
 
 def _operational_python_files():
+    """Yield every Python source file under the operational directories, skipping __pycache__."""
     for dirname in OPERATIONAL_DIRS:
         directory = REPO_ROOT / dirname
         if not directory.is_dir():
@@ -61,6 +64,8 @@ def _operational_python_files():
 
 
 def test_no_destructive_redis_operations_in_operational_code():
+    """Forbid destructive Redis commands, raw command execution, and the KEYS method from appearing
+    anywhere in operational source."""
     violations = []
     for path in _operational_python_files():
         if "__pycache__" in path.parts:

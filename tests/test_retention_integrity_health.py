@@ -3,11 +3,15 @@ status-file bridge between scripts/verify_audit_integrity.py /
 scripts/audit_retention_cleanup.py (external script runs) and
 GET /audit/pipeline-health. Same "unknown is never fabricated" and
 opt-in-via-env-var discipline as the rest of audit_health_service.py.
+
+Developer: Manish Kumar <manish@omnibioai.org>
 """
 from services.audit_health_service import get_retention_integrity_health
 
 
 def test_not_configured_when_status_dir_unset(monkeypatch):
+    """Report status_source as not_configured with no timestamps when AUDIT_HEALTH_STATUS_DIR is
+    unset."""
     monkeypatch.delenv("AUDIT_HEALTH_STATUS_DIR", raising=False)
 
     health = get_retention_integrity_health()
@@ -18,6 +22,8 @@ def test_not_configured_when_status_dir_unset(monkeypatch):
 
 
 def test_configured_but_never_run_reports_none_fields(monkeypatch, tmp_path):
+    """Report status_source as configured with null timestamps, never fabricated, when the status
+    directory exists but no status file has been written."""
     monkeypatch.setenv("AUDIT_HEALTH_STATUS_DIR", str(tmp_path))
 
     health = get_retention_integrity_health()
@@ -28,6 +34,8 @@ def test_configured_but_never_run_reports_none_fields(monkeypatch, tmp_path):
 
 
 def test_reads_a_real_verification_status_file(monkeypatch, tmp_path):
+    """Read the last verification timestamp, result, and invalid-event count from a real status
+    file."""
     monkeypatch.setenv("AUDIT_HEALTH_STATUS_DIR", str(tmp_path))
     (tmp_path / "audit-integrity-verification.env").write_text(
         "LAST_VERIFICATION_TS=2026-09-16T12:00:00+00:00\n"
@@ -46,6 +54,8 @@ def test_reads_a_real_verification_status_file(monkeypatch, tmp_path):
 
 
 def test_reads_a_real_retention_status_file(monkeypatch, tmp_path):
+    """Read the last retention run timestamp, mode, result, and deleted total from a real status
+    file."""
     monkeypatch.setenv("AUDIT_HEALTH_STATUS_DIR", str(tmp_path))
     (tmp_path / "audit-retention-run.env").write_text(
         "LAST_RETENTION_RUN_TS=2026-09-16T04:00:00+00:00\n"
@@ -100,6 +110,7 @@ def test_real_verify_script_writes_a_status_file_when_configured(tmp_path, monke
 
 
 def test_real_retention_script_writes_a_status_file_when_configured(tmp_path, monkeypatch):
+    """Read back the result and deleted total the real retention script's status writer wrote."""
     import sys
     sys.path.insert(0, ".")
     from scripts.audit_retention_cleanup import _write_status_file

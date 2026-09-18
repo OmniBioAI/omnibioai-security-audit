@@ -22,6 +22,8 @@ Does not touch the append-only triggers' CURRENT_USER-vs-USER() behavior
 or the provisioning script -- those are covered in
 test_retention_immutability_integration.py. This file is scoped to the
 backup/restore round trip specifically.
+
+Developer: Manish Kumar <manish@omnibioai.org>
 """
 import json
 import os
@@ -54,6 +56,8 @@ RESTORED_DB = f"omnibioai_audit_e3_backup_dst_{_RUN_ID}"
 
 
 def _real_mysql_available():
+    """Report whether the configured test-MySQL root URL is reachable, returning False when
+    unconfigured or unreachable."""
     if TEST_MYSQL_ROOT_URL is None:
         return False
     try:
@@ -175,6 +179,8 @@ def restored_db(source_db_with_data, tmp_path_factory):
 
 
 def test_dump_includes_triggers_flag_captured_all_three_tables(restored_db):
+    """Capture audit_events, quarantined_audit_events, and audit_legal_holds in the backup dump and
+    produce a non-empty dump file."""
     engine = create_engine(restored_db)
     with engine.connect() as conn:
         tables = {row[0] for row in conn.execute(text("SHOW TABLES"))}
@@ -182,6 +188,8 @@ def test_dump_includes_triggers_flag_captured_all_three_tables(restored_db):
 
 
 def test_restored_audit_event_id_and_hash_survive_byte_for_byte(source_db_with_data, restored_db):
+    """Preserve an audit event's event_id and record_integrity_hash byte-for-byte through a real
+    backup/restore round trip."""
     source_engine = create_engine(source_db_with_data)
     restored_engine = create_engine(restored_db)
 
@@ -200,6 +208,8 @@ def test_restored_audit_event_id_and_hash_survive_byte_for_byte(source_db_with_d
 
 
 def test_restored_quarantine_record_survives_byte_for_byte(source_db_with_data, restored_db):
+    """Preserve a quarantine record's raw_data and record_integrity_hash byte-for-byte through a
+    real backup/restore round trip."""
     source_engine = create_engine(source_db_with_data)
     restored_engine = create_engine(restored_db)
 
@@ -217,6 +227,7 @@ def test_restored_quarantine_record_survives_byte_for_byte(source_db_with_data, 
 
 
 def test_restored_legal_hold_survives(restored_db):
+    """Preserve a legal hold row through a real backup/restore round trip."""
     engine = create_engine(restored_db)
     with engine.connect() as conn:
         count = conn.execute(text(

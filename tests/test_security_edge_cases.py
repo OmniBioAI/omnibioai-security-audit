@@ -1,4 +1,7 @@
-"""Hermetic security-boundary tests not requiring FastAPI or live backends."""
+"""Hermetic security-boundary tests not requiring FastAPI or live backends.
+
+Developer: Manish Kumar <manish@omnibioai.org>
+"""
 
 from __future__ import annotations
 
@@ -46,6 +49,7 @@ def _collect_registered_paths(routes) -> set[str]:
 
 
 def test_fastapi_app_registers_both_audit_routers():
+    """Register /health, /audit/test, and /audit/events on the FastAPI app."""
     from api.main import app
 
     paths = _collect_registered_paths(app.routes)
@@ -55,6 +59,7 @@ def test_fastapi_app_registers_both_audit_routers():
 
 
 def test_signing_rejects_empty_service_and_none_data():
+    """Raise ValueError naming the offending field for an empty service or a None data argument."""
     with pytest.raises(ValueError, match="service"):
         signing.sign_audit_event("", "{}", "secret")
     with pytest.raises(ValueError, match="data"):
@@ -75,10 +80,12 @@ def test_signing_rejects_empty_service_and_none_data():
     ],
 )
 def test_signature_verification_fails_closed_for_malformed_wire_values(service, data, signature):
+    """Return False rather than raise for a malformed service, data, or signature value."""
     assert signing.verify_audit_event(service, data, signature, "secret") is False
 
 
 def test_signature_verification_fails_closed_if_compare_digest_raises(monkeypatch):
+    """Return False rather than propagate an exception when hmac.compare_digest itself raises."""
     valid = signing.sign_audit_event("auth", '{"event_id":"1"}', "secret")
     monkeypatch.setattr(signing.hmac, "compare_digest", MagicMock(side_effect=RuntimeError("bad crypto")))
 
@@ -86,11 +93,14 @@ def test_signature_verification_fails_closed_if_compare_digest_raises(monkeypatc
 
 
 def test_health_route_is_side_effect_free():
+    """Return {"status": "ok"} from the health route handler with no side effects."""
     assert routes_audit.health() == {"status": "ok"}
 
 
 @pytest.mark.asyncio
 async def test_audit_test_route_builds_and_logs_service_event(monkeypatch):
+    """Build and log a security-audit-test event with the health_check action and a success
+    decision."""
     logger = MagicMock()
     logger.log = AsyncMock()
     monkeypatch.setattr(routes_audit, "logger", logger)
@@ -107,11 +117,14 @@ async def test_audit_test_route_builds_and_logs_service_event(monkeypatch):
 
 
 def test_audit_event_schema_requires_integrity_and_core_fields():
+    """Reject constructing AuditEventOut from only a partial set of fields."""
     with pytest.raises(ValidationError):
         AuditEventOut(event_id="evt-1")
 
 
 def test_audit_event_schema_supports_orm_attributes_and_nullable_identity():
+    """Build AuditEventOut from an ORM-like object, defaulting user_id to null and integrity_status
+    to unsigned."""
     row = SimpleNamespace(
         event_id="evt-1",
         timestamp=datetime(2026, 1, 1, 0, 0, 0, tzinfo=timezone.utc),
@@ -139,6 +152,8 @@ def test_audit_event_schema_supports_orm_attributes_and_nullable_identity():
 
 
 def test_audit_event_list_response_preserves_pagination_contract():
+    """Preserve every documented field, including generated_at and source_checked_at, when
+    serializing AuditEventListResponse."""
     generated_at = datetime(2026, 1, 1, tzinfo=timezone.utc)
     source_checked_at = datetime(2026, 1, 1, 0, 0, 1, tzinfo=timezone.utc)
     response = AuditEventListResponse(
@@ -165,6 +180,8 @@ def test_audit_event_list_response_preserves_pagination_contract():
 
 
 def test_list_audit_events_route_forwards_all_security_filters(monkeypatch):
+    """Forward every security filter argument to the query service and return zero total for an
+    empty result."""
     db = MagicMock()
     captured = {}
 
@@ -194,6 +211,7 @@ def test_list_audit_events_route_forwards_all_security_filters(monkeypatch):
 
 
 def test_list_audit_events_route_calculates_nonempty_total_pages(monkeypatch):
+    """Compute the correct total_pages for a non-empty result set."""
     monkeypatch.setattr(
         routes_audit_events.audit_query_service,
         "list_audit_events",
@@ -209,6 +227,7 @@ def test_list_audit_events_route_calculates_nonempty_total_pages(monkeypatch):
 
 
 def test_get_db_closes_session_after_normal_iteration(monkeypatch):
+    """Close the session after the get_db generator completes normal iteration."""
     # get_db() is bound to ReaderSessionLocal (V2-003 reader/writer split,
     # db/session.py) -- SessionLocal is the writer factory worker/main.py
     # uses instead, and patching it here would leave get_db() constructing
@@ -223,6 +242,7 @@ def test_get_db_closes_session_after_normal_iteration(monkeypatch):
 
 
 def test_get_db_closes_session_when_consumer_raises(monkeypatch):
+    """Close the session even when the consumer of get_db raises inside the with block."""
     db = MagicMock()
     monkeypatch.setattr("db.session.ReaderSessionLocal", MagicMock(return_value=db))
     generator = get_db()

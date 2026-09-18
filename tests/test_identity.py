@@ -1,5 +1,8 @@
 """PR4.4: audit/identity.py -- validates access tokens for audit event
-producers and derives verified identity claims from them."""
+producers and derives verified identity claims from them.
+
+Developer: Manish Kumar <manish@omnibioai.org>
+"""
 import datetime as dt
 
 import jwt
@@ -12,34 +15,41 @@ SECRET = "test-secret"
 
 
 def _token(**claims):
+    """Sign an HS256 test token with the shared test secret, applying any extra claims."""
     return jwt.encode(claims, SECRET, algorithm="HS256")
 
 
 @pytest.fixture(autouse=True)
 def _patch_secret(monkeypatch):
+    """Point the JWT verifier at the shared test secret for every test in this module."""
     # SSO Phase 2 PR3: decoding now happens in audit.jwt_verify, not here
     # -- identity_module no longer has its own JWT_SECRET to patch.
     monkeypatch.setattr(jwt_verify_module, "JWT_SECRET", SECRET)
 
 
 def test_none_token_returns_none():
+    """Return None for a None token."""
     assert validate_identity_token(None) is None
 
 
 def test_empty_token_returns_none():
+    """Return None for an empty token string."""
     assert validate_identity_token("") is None
 
 
 def test_malformed_token_returns_none():
+    """Return None for a token that is not a valid JWT."""
     assert validate_identity_token("not-a-real-token") is None
 
 
 def test_wrong_signature_returns_none():
+    """Return None for a token signed with a different secret."""
     token = jwt.encode({"sub": "1"}, "a-different-secret", algorithm="HS256")
     assert validate_identity_token(token) is None
 
 
 def test_expired_token_returns_none():
+    """Return None for an expired token."""
     token = jwt.encode(
         {
             "sub": "1",
@@ -52,11 +62,14 @@ def test_expired_token_returns_none():
 
 
 def test_missing_sub_claim_returns_none():
+    """Return None for a valid token that carries no sub claim."""
     token = _token(email="nosub@omnibioai.test")
     assert validate_identity_token(token) is None
 
 
 def test_valid_token_returns_verified_identity():
+    """Return a VerifiedIdentity carrying the subject, email, roles, and organization from a valid
+    token."""
     token = _token(
         sub="42",
         email="alice@omnibioai.test",
@@ -90,6 +103,7 @@ def test_valid_token_minimal_claims_defaults_gracefully():
 
 
 def test_verified_identity_instances_do_not_share_mutable_defaults():
+    """Keep each VerifiedIdentity's default roles list independent, not shared mutable state."""
     a = VerifiedIdentity(sub="a")
     b = VerifiedIdentity(sub="b")
     a.roles.append("should-not-leak")
@@ -107,6 +121,7 @@ def test_non_string_sub_claim_returns_none():
 
 
 def test_as_context_shape():
+    """Serialize a VerifiedIdentity to the dict shape as_context produces."""
     identity = VerifiedIdentity(
         sub="1", email="a@b.com", roles=["r1"], org_id=1, org_role=["r2"]
     )

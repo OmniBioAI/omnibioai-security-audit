@@ -5,6 +5,8 @@ persisted on each AuditEventRecord.
 
 Synthetic secrets only, matching tests/test_signing.py's own convention --
 never a real deployment JWT_SECRET.
+
+Developer: Manish Kumar <manish@omnibioai.org>
 """
 from audit.signing import sign_audit_event
 from consumers.processor import classify_event_integrity
@@ -20,30 +22,36 @@ DATA = '{"event_id":"e1","service":"tes","action":"submit"}'
 # ---------------------------------------------------------------------------
 
 def test_valid_signature_classifies_as_valid():
+    """Classify a correctly signed event as valid."""
     sig = sign_audit_event(SERVICE, DATA, SECRET)
     assert classify_event_integrity(SERVICE, sig, DATA, SECRET) == "valid"
 
 
 def test_wrong_secret_classifies_as_invalid():
+    """Classify a signature verified against the wrong secret as invalid."""
     sig = sign_audit_event(SERVICE, DATA, SECRET)
     assert classify_event_integrity(SERVICE, sig, DATA, OTHER_SECRET) == "invalid"
 
 
 def test_tampered_data_classifies_as_invalid():
+    """Classify a signature whose data was altered after signing as invalid."""
     sig = sign_audit_event(SERVICE, DATA, SECRET)
     tampered = DATA.replace("submit", "delete_all")
     assert classify_event_integrity(SERVICE, sig, tampered, SECRET) == "invalid"
 
 
 def test_malformed_signature_classifies_as_invalid():
+    """Classify a signature string that is not a real signature as invalid."""
     assert classify_event_integrity(SERVICE, "not-a-real-signature", DATA, SECRET) == "invalid"
 
 
 def test_missing_signature_classifies_as_unsigned():
+    """Classify a None signature as unsigned, not invalid."""
     assert classify_event_integrity(SERVICE, None, DATA, SECRET) == "unsigned"
 
 
 def test_empty_signature_classifies_as_unsigned():
+    """Classify an empty-string signature as unsigned, not invalid."""
     assert classify_event_integrity(SERVICE, "", DATA, SECRET) == "unsigned"
 
 
@@ -59,6 +67,7 @@ def test_empty_signature_classifies_as_unsigned():
 # ---------------------------------------------------------------------------
 
 def test_missing_signature_is_unsigned_not_invalid_even_with_wrong_secret():
+    """Classify a missing signature as unsigned regardless of which secret is checked against."""
     assert classify_event_integrity(SERVICE, None, DATA, OTHER_SECRET) == "unsigned"
 
 
@@ -67,11 +76,13 @@ def test_missing_signature_is_unsigned_not_invalid_even_with_wrong_secret():
 # ---------------------------------------------------------------------------
 
 def test_signature_for_different_service_classifies_as_invalid():
+    """Classify a signature made for a different service as invalid."""
     sig = sign_audit_event("workflow-bundles", DATA, SECRET)
     assert classify_event_integrity("auth-service", sig, DATA, SECRET) == "invalid"
 
 
 def test_signature_for_different_data_classifies_as_invalid():
+    """Classify a signature made for different data as invalid."""
     other_data = '{"event_id":"e2","service":"tes","action":"delete"}'
     sig = sign_audit_event(SERVICE, other_data, SECRET)
     assert classify_event_integrity(SERVICE, sig, DATA, SECRET) == "invalid"
@@ -86,6 +97,8 @@ def test_signature_for_different_data_classifies_as_invalid():
 # ---------------------------------------------------------------------------
 
 def test_reordered_json_keys_invalidate_the_original_signature():
+    """Classify a signature as invalid when the same data is reserialized with its JSON keys
+    reordered."""
     original = '{"a": 1, "b": 2}'
     reordered = '{"b": 2, "a": 1}'
     sig = sign_audit_event(SERVICE, original, SECRET)
@@ -105,6 +118,8 @@ def test_exact_original_string_still_classifies_as_valid():
 # ---------------------------------------------------------------------------
 
 def test_return_value_is_always_one_of_the_three_literal_strings():
+    """Return exactly one of valid, invalid, or unsigned for every combination of signature and
+    secret."""
     sig = sign_audit_event(SERVICE, DATA, SECRET)
     for signature, secret, expected in [
         (sig, SECRET, "valid"),

@@ -1,3 +1,9 @@
+"""Validate /audit/events/safe's organization-scoped visibility, its inability to be widened by a
+query override, empty and error handling, and validation of the timestamp range and page size.
+
+Developer: Manish Kumar <manish@omnibioai.org>
+"""
+
 from datetime import datetime, timedelta
 from unittest.mock import patch
 
@@ -12,6 +18,7 @@ SECRET = "test-secret"
 
 
 def _headers(*, org_id=None, org_role=None, permissions=None):
+    """Build an Authorization header carrying the given organization id, org roles, and permissions."""
     claims = {"sub": "actor", "roles": [], "org_role": org_role or [], "permissions": permissions or []}
     if org_id is not None:
         claims["org_id"] = org_id
@@ -19,6 +26,7 @@ def _headers(*, org_id=None, org_role=None, permissions=None):
 
 
 def _seed(factory):
+    """Insert one safe-scoped AuditEventRecord per organization/global/unknown tenant scope."""
     db = factory()
     base = datetime(2026, 1, 1, 12, 0, 0)  # noqa: DTZ001
     for i, (scope, org) in enumerate((("organization", "1"), ("organization", "2"), ("global", None), ("unknown", None))):
@@ -32,6 +40,8 @@ def _seed(factory):
 
 
 def test_org_scope_excludes_other_global_and_unknown_and_is_sql_paginated(audit_events_client):
+    """Return only the requesting org's own events, excluding another org's, global, and unknown
+    events, with SQL-level pagination and unknown freshness/retention."""
     client, sessions = audit_events_client
     _seed(sessions)
     response = client.get("/audit/events/safe", headers=_headers(org_id="1", org_role=["org_admin"]), params={"page_size": 1})
@@ -46,6 +56,8 @@ def test_org_scope_excludes_other_global_and_unknown_and_is_sql_paginated(audit_
 
 
 def test_platform_scope_sees_global_and_unknown(audit_events_client):
+    """Return global and unknown-scope events, in addition to organization events, to a
+    platform-scoped caller."""
     client, sessions = audit_events_client
     _seed(sessions)
     response = client.get("/audit/events/safe", headers=_headers(permissions=["manage_all_orgs"]))
@@ -55,12 +67,14 @@ def test_platform_scope_sees_global_and_unknown(audit_events_client):
 
 
 def test_org_query_override_cannot_widen(audit_events_client):
+    """Reject an org-scoped caller's attempt to query a different organization_id with 403."""
     client, _ = audit_events_client
     response = client.get("/audit/events/safe", headers=_headers(org_id="1", org_role=["org_admin"]), params={"organization_id": "2"})
     assert response.status_code == 403
 
 
 def test_empty_safe_result_is_available(audit_events_client):
+    """Report an empty result as source-available rather than an error."""
     client, _ = audit_events_client
     response = client.get("/audit/events/safe", headers=_headers(org_id="1", org_role=["org_admin"]))
     body = response.json()
@@ -71,6 +85,8 @@ def test_empty_safe_result_is_available(audit_events_client):
 
 
 def test_safe_auth_failures_and_validation(audit_events_client):
+    """Reject a missing token, an unscoped caller, an org-scoped caller with no org_id, and an
+    oversized page_size."""
     client, _ = audit_events_client
     assert client.get("/audit/events/safe").status_code == 401
     assert client.get("/audit/events/safe", headers=_headers()).status_code == 403
@@ -79,6 +95,7 @@ def test_safe_auth_failures_and_validation(audit_events_client):
 
 
 def test_from_timestamp_after_to_timestamp_returns_422(audit_events_client):
+    """Reject a query whose from_timestamp is after its to_timestamp with 422."""
     client, _ = audit_events_client
     response = client.get(
         "/audit/events/safe",
@@ -92,6 +109,8 @@ def test_from_timestamp_after_to_timestamp_returns_422(audit_events_client):
 
 
 def test_safe_database_failure_is_normalized_without_internal_details():
+    """Return a 503 from /audit/events/safe with a generic AUDIT_SOURCE_UNAVAILABLE code, never
+    the raw SQL or the underlying exception's text."""
     with patch(
         "api.routes_audit_safe.audit_query_service.list_safe_audit_events",
         side_effect=OperationalError("SELECT audit_events", {}, Exception("db.internal")),

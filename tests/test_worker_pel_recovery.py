@@ -9,6 +9,8 @@ read_group() but never acked (worker crash, transient persistence
 failure) was previously invisible to every future read_group() call
 forever -- read_group() only ever asks Redis for ">" (strictly new
 messages). sweep_pending() is what makes such an entry reachable again.
+
+Developer: Manish Kumar <manish@omnibioai.org>
 """
 import json
 from unittest.mock import MagicMock, patch
@@ -18,6 +20,7 @@ from audit.config import AuditConfig
 
 
 def _raw(event_id="evt-1"):
+    """Build a valid JSON audit-event payload string for the given event id."""
     return json.dumps({
         "event_id": event_id,
         "timestamp": "2026-01-01T12:00:00",
@@ -32,6 +35,7 @@ def _raw(event_id="evt-1"):
 # ---------------------------------------------------------------------------
 
 def test_sweep_pending_processes_each_reclaimed_message():
+    """Route every reclaimed message through handle_message."""
     reader = MagicMock()
     reader.claim_stale.return_value = (
         [("2-0", {"data": _raw("evt-reclaimed-a")}), ("2-1", {"data": _raw("evt-reclaimed-b")})],
@@ -202,6 +206,7 @@ def test_sweep_pending_survives_claim_stale_raising(capsys):
 
 
 def test_sweep_pending_no_op_when_nothing_stale():
+    """Call neither handle_message nor ack when claim_stale reclaims nothing."""
     reader = MagicMock()
     reader.claim_stale.return_value = ([], [])
 
@@ -219,6 +224,7 @@ def test_sweep_pending_no_op_when_nothing_stale():
 # ---------------------------------------------------------------------------
 
 def test_run_calls_sweep_pending_every_iteration():
+    """Call claim_stale once per run iteration."""
     mock_reader = MagicMock()
     mock_reader.read_group.return_value = []
     mock_reader.claim_stale.return_value = ([], [])
@@ -230,6 +236,7 @@ def test_run_calls_sweep_pending_every_iteration():
 
 
 def test_run_still_processes_new_messages_when_sweep_finds_nothing():
+    """Process newly read messages even when the pending sweep finds nothing stale."""
     mock_reader = MagicMock()
     mock_reader.claim_stale.return_value = ([], [])
     mock_reader.read_group.return_value = [
@@ -244,6 +251,7 @@ def test_run_still_processes_new_messages_when_sweep_finds_nothing():
 
 
 def test_run_processes_both_reclaimed_and_new_messages_in_one_iteration():
+    """Process both a reclaimed message and a newly read message within one iteration."""
     mock_reader = MagicMock()
     mock_reader.claim_stale.return_value = ([("2-0", {"data": _raw("evt-reclaimed")})], [])
     mock_reader.read_group.return_value = [
@@ -260,6 +268,7 @@ def test_run_processes_both_reclaimed_and_new_messages_in_one_iteration():
 
 
 def test_run_survives_sweep_pending_raising_and_still_reads_new_messages():
+    """Keep reading new messages in the same iteration after sweep_pending raises."""
     mock_reader = MagicMock()
     mock_reader.claim_stale.side_effect = Exception("redis blip during sweep")
     mock_reader.read_group.return_value = [
