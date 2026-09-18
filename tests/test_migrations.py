@@ -1,6 +1,8 @@
 """PR4.2: Alembic migration mechanics for the audit_events table, exercised
 against an isolated throwaway SQLite database -- never against a real
 MySQL instance. Mirrors omnibioai-auth/tests/test_migrations.py's pattern.
+
+Developer: Manish Kumar <manish@omnibioai.org>
 """
 from pathlib import Path
 
@@ -20,6 +22,8 @@ EXPECTED_COLUMNS = {
 
 
 def _alembic_config(db_url: str) -> Config:
+    """Build an Alembic Config that points at the repository's migrations and the given SQLite test
+    database URL."""
     cfg = Config(str(REPO_ROOT / "alembic.ini"))
     cfg.set_main_option("script_location", str(REPO_ROOT / "alembic"))
     # env.py only falls back to AuditConfig.DATABASE_URL when this is unset
@@ -30,6 +34,7 @@ def _alembic_config(db_url: str) -> Config:
 
 
 def test_upgrade_head_creates_audit_events_table(tmp_path):
+    """Create the audit_events table with its expected columns on a fresh upgrade to head."""
     db_file = tmp_path / "migration_test.db"
     db_url = f"sqlite:///{db_file}"
 
@@ -45,6 +50,7 @@ def test_upgrade_head_creates_audit_events_table(tmp_path):
 
 
 def test_audit_events_event_id_is_primary_key(tmp_path):
+    """Set event_id as the primary key of audit_events."""
     db_file = tmp_path / "migration_test.db"
     db_url = f"sqlite:///{db_file}"
 
@@ -58,6 +64,7 @@ def test_audit_events_event_id_is_primary_key(tmp_path):
 
 
 def test_downgrade_drops_audit_events_table(tmp_path):
+    """Drop the audit_events table when downgraded to base."""
     db_file = tmp_path / "migration_test.db"
     db_url = f"sqlite:///{db_file}"
 
@@ -75,6 +82,7 @@ def test_downgrade_drops_audit_events_table(tmp_path):
 # ---------------------------------------------------------------------------
 
 def test_integrity_status_column_exists_after_upgrade(tmp_path):
+    """Add a non-nullable integrity_status column at head."""
     db_file = tmp_path / "migration_test.db"
     db_url = f"sqlite:///{db_file}"
 
@@ -89,6 +97,8 @@ def test_integrity_status_column_exists_after_upgrade(tmp_path):
 
 
 def test_tenant_columns_and_query_index_exist_after_upgrade(tmp_path):
+    """Add a nullable organization_id, a non-nullable tenant_scope, and the org/timestamp/event
+    query index at head."""
     db_file = tmp_path / "migration_test.db"
     cfg = _alembic_config(f"sqlite:///{db_file}")
     command.upgrade(cfg, "head")
@@ -102,6 +112,7 @@ def test_tenant_columns_and_query_index_exist_after_upgrade(tmp_path):
 
 
 def test_legacy_rows_are_unknown_after_tenant_migration(tmp_path):
+    """Backfill pre-existing rows with a null organization_id and an unknown tenant_scope."""
     db_file = tmp_path / "migration_test.db"
     cfg = _alembic_config(f"sqlite:///{db_file}")
     command.upgrade(cfg, "0002_integrity_status")

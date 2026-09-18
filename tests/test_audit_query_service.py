@@ -1,6 +1,9 @@
 """PR4.3: services/audit_query_service.py -- SQL-level filtering, ordering,
 and pagination over audit_events, exercised against a real (SQLite) DB via
-the `db_session` fixture (no HTTP layer)."""
+the `db_session` fixture (no HTTP layer).
+
+Developer: Manish Kumar <manish@omnibioai.org>
+"""
 from datetime import datetime, timedelta
 
 from db.models import AuditEventRecord
@@ -8,6 +11,7 @@ from services import audit_query_service
 
 
 def _add(db_session, event_id, minutes_offset=0, **overrides):
+    """Insert one AuditEventRecord at a given time offset, applying any field overrides."""
     row = AuditEventRecord(
         event_id=event_id,
         timestamp=datetime(2026, 1, 1, 12, 0, 0) + timedelta(minutes=minutes_offset),  # noqa: DTZ001 -- AuditEventRecord.timestamp is a naive DateTime column (db/models.py); an aware value here would mismatch it, not fix anything
@@ -33,6 +37,7 @@ def _add(db_session, event_id, minutes_offset=0, **overrides):
 # ---------------------------------------------------------------------------
 
 def test_filters_by_user_id(db_session):
+    """Return only events matching the requested user_id."""
     _add(db_session, "e1", user_id="u1")
     _add(db_session, "e2", user_id="u2")
     db_session.commit()
@@ -45,6 +50,8 @@ def test_filters_by_user_id(db_session):
 
 
 def test_filters_by_organization_id_without_authorizing_scope(db_session):
+    """Return only events matching the requested organization_id, with no scope authorization
+    applied at this layer."""
     _add(db_session, "e1", organization_id="org-1")
     _add(db_session, "e2", organization_id="org-2")
     db_session.commit()
@@ -56,6 +63,7 @@ def test_filters_by_organization_id_without_authorizing_scope(db_session):
 
 
 def test_filters_by_service(db_session):
+    """Return only events matching the requested service."""
     _add(db_session, "e1", service="auth")
     _add(db_session, "e2", service="policy")
     db_session.commit()
@@ -68,6 +76,7 @@ def test_filters_by_service(db_session):
 
 
 def test_filters_by_event_type(db_session):
+    """Return only events matching the requested event_type."""
     _add(db_session, "e1", event_type="auth_login")
     _add(db_session, "e2", event_type="user_suspended")
     db_session.commit()
@@ -80,6 +89,7 @@ def test_filters_by_event_type(db_session):
 
 
 def test_filters_by_decision(db_session):
+    """Return only events matching the requested decision."""
     _add(db_session, "e1", decision="success")
     _add(db_session, "e2", decision="deny")
     db_session.commit()
@@ -92,6 +102,7 @@ def test_filters_by_decision(db_session):
 
 
 def test_filters_by_timestamp_range(db_session):
+    """Return only events within the requested timestamp range."""
     _add(db_session, "e1", minutes_offset=0)
     _add(db_session, "e2", minutes_offset=10)
     _add(db_session, "e3", minutes_offset=20)
@@ -109,6 +120,7 @@ def test_filters_by_timestamp_range(db_session):
 
 
 def test_filters_by_integrity_status(db_session):
+    """Return only events matching the requested integrity_status."""
     _add(db_session, "e1", integrity_status="valid")
     _add(db_session, "e2", integrity_status="invalid")
     _add(db_session, "e3")  # unspecified -- DB server_default="unsigned" applies
@@ -122,6 +134,8 @@ def test_filters_by_integrity_status(db_session):
 
 
 def test_filters_by_integrity_status_unsigned_matches_the_default(db_session):
+    """Match rows left at the database's unsigned default when filtering for
+    integrity_status=unsigned."""
     _add(db_session, "e1", integrity_status="valid")
     _add(db_session, "e2")
     db_session.commit()
@@ -149,6 +163,7 @@ def test_combined_filters_no_cross_leakage(db_session):
 
 
 def test_no_filters_returns_all(db_session):
+    """Return every event when no filter is applied."""
     _add(db_session, "e1")
     _add(db_session, "e2")
     _add(db_session, "e3")
@@ -159,6 +174,7 @@ def test_no_filters_returns_all(db_session):
 
 
 def test_empty_result(db_session):
+    """Return an empty list and zero total when no event matches the filter."""
     _add(db_session, "e1", service="auth")
     db_session.commit()
 
@@ -174,6 +190,7 @@ def test_empty_result(db_session):
 # ---------------------------------------------------------------------------
 
 def test_ordering_newest_first(db_session):
+    """Order results by newest event first."""
     _add(db_session, "e1", minutes_offset=0)
     _add(db_session, "e2", minutes_offset=10)
     _add(db_session, "e3", minutes_offset=5)
@@ -199,6 +216,7 @@ def test_ordering_tiebreak_by_event_id_desc(db_session):
 # ---------------------------------------------------------------------------
 
 def test_pagination_page_boundaries(db_session):
+    """Split results across pages, including a partial final page."""
     for i in range(5):
         _add(db_session, f"e{i}", minutes_offset=i)
     db_session.commit()
@@ -214,6 +232,8 @@ def test_pagination_page_boundaries(db_session):
 
 
 def test_pagination_out_of_range_page_returns_empty(db_session):
+    """Return no rows for a page beyond the result set while total still reflects every matching
+    row."""
     _add(db_session, "e1")
     db_session.commit()
 
@@ -223,6 +243,7 @@ def test_pagination_out_of_range_page_returns_empty(db_session):
 
 
 def test_pagination_total_unaffected_by_page_size(db_session):
+    """Report the full matching total regardless of the requested page size."""
     for i in range(7):
         _add(db_session, f"e{i}", minutes_offset=i)
     db_session.commit()
@@ -240,6 +261,8 @@ def test_pagination_total_unaffected_by_page_size(db_session):
 # ---------------------------------------------------------------------------
 
 def test_safe_platform_wide_with_explicit_organization_id_filters(db_session):
+    """Return only the requested organization's events for a platform-wide safe query with an
+    explicit organization_id."""
     _add(db_session, "e1", organization_id="org-1")
     _add(db_session, "e2", organization_id="org-2")
     db_session.commit()
@@ -252,6 +275,7 @@ def test_safe_platform_wide_with_explicit_organization_id_filters(db_session):
 
 
 def test_safe_column_filters(db_session):
+    """Filter safe query results by user_id, service, event_type, and decision together."""
     _add(db_session, "e1", user_id="u1", service="auth", event_type="auth_login", decision="success")
     _add(db_session, "e2", user_id="u2", service="policy", event_type="policy_decision", decision="deny")
     db_session.commit()
@@ -266,6 +290,7 @@ def test_safe_column_filters(db_session):
 
 
 def test_safe_timestamp_range_filters(db_session):
+    """Filter safe query results to the requested timestamp range."""
     _add(db_session, "e1", minutes_offset=0)
     _add(db_session, "e2", minutes_offset=10)
     _add(db_session, "e3", minutes_offset=20)

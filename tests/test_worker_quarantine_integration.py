@@ -9,6 +9,8 @@ test doesn't: a "persistence_exhausted" poison entry (a perfectly valid
 event that simply never reached MySQL in time), quarantine-write failure
 NOT acking the original, and quarantine-write idempotency across a
 crash-after-quarantine-before-ack gap.
+
+Developer: Manish Kumar <manish@omnibioai.org>
 """
 import json
 import os
@@ -53,6 +55,8 @@ TEST_GROUP = "audit-workers"
 
 
 def _real_backends_available():
+    """Report whether both the configured test-MySQL root URL and test-Redis URL are reachable,
+    returning False when either is unconfigured or unreachable."""
     if TEST_MYSQL_ROOT_URL is None or TEST_REDIS_URL is None:
         return False
     try:
@@ -78,6 +82,8 @@ pytestmark = pytest.mark.skipif(
 
 @pytest.fixture
 def real_redis_stream():
+    """Point the stream reader at an isolated test stream and consumer group, then destroy the group
+    and delete the stream on teardown -- never touches the production audit:events stream."""
     from audit.config import AuditConfig
     from consumers.stream_reader import StreamReader
 
@@ -104,6 +110,8 @@ def real_redis_stream():
 
 @pytest.fixture
 def real_mysql_url():
+    """Create a throwaway database, run the real Alembic migration against it, yield its URL, then
+    drop it."""
     root_engine = create_engine(TEST_MYSQL_ROOT_URL)
     with root_engine.connect() as conn:
         conn.execute(text(f"DROP DATABASE IF EXISTS {TEST_DB_NAME}"))
@@ -132,6 +140,7 @@ def real_mysql_url():
 
 
 def _session_local(real_mysql_url):
+    """Build a SQLAlchemy sessionmaker bound to the throwaway test-MySQL database."""
     from sqlalchemy.orm import sessionmaker
 
     engine = create_engine(real_mysql_url)
@@ -139,6 +148,7 @@ def _session_local(real_mysql_url):
 
 
 def _valid_payload(event_id):
+    """Build a valid JSON audit-event payload string for the given event id."""
     return json.dumps({
         "event_id": event_id,
         "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -164,6 +174,8 @@ def _valid_payload(event_id):
 def test_real_persistence_exhausted_event_is_quarantined_with_recoverable_payload(
     real_redis_stream, real_mysql_url, monkeypatch,
 ):
+    """Quarantine an event whose persistence keeps failing until max deliveries, with the
+    quarantined row carrying a recoverable payload."""
     import worker.main as worker_module
     from consumers.sink import Sink
 
@@ -233,6 +245,7 @@ def test_real_persistence_exhausted_event_is_quarantined_with_recoverable_payloa
 def test_real_quarantine_write_failure_does_not_ack_original(
     real_redis_stream, real_mysql_url, monkeypatch,
 ):
+    """Leave the original message unacknowledged when the quarantine write itself fails."""
     import worker.main as worker_module
     from consumers.quarantine import QuarantineSink
 
@@ -283,6 +296,8 @@ def test_real_quarantine_write_failure_does_not_ack_original(
 def test_real_requarantine_after_crash_before_ack_is_idempotent(
     real_redis_stream, real_mysql_url, monkeypatch,
 ):
+    """Quarantine a poison message exactly once even when it is reclaimed and requarantined after a
+    crash before ack."""
     import worker.main as worker_module
     from consumers.quarantine import QuarantineSink
 
@@ -368,6 +383,7 @@ def test_real_requarantine_after_crash_before_ack_is_idempotent(
 def test_real_missing_data_field_is_quarantined_not_crashed(
     real_redis_stream, real_mysql_url, monkeypatch,
 ):
+    """Quarantine a message that carries no data field instead of crashing the worker."""
     import worker.main as worker_module
 
     TestSessionLocal = _session_local(real_mysql_url)

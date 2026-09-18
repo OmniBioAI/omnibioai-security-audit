@@ -27,6 +27,8 @@ integration test module in this suite:
    already uses 33061). There is deliberately no
    ALLOW_PRODUCTION_TESTS-style escape hatch -- there is no supported
    mode where these tests intentionally operate against production.
+
+Developer: Manish Kumar <manish@omnibioai.org>
 """
 from __future__ import annotations
 

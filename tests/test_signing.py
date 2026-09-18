@@ -3,6 +3,8 @@
 Synthetic secrets only -- never a real deployment JWT_SECRET. This module
 is not yet wired into any producer or consumer (that's PR2+), so these
 tests exercise audit.signing directly.
+
+Developer: Manish Kumar <manish@omnibioai.org>
 """
 import hashlib
 import hmac
@@ -21,6 +23,7 @@ DATA = '{"event_id":"e1","service":"tes","action":"submit"}'
 # ---------------------------------------------------------------------------
 
 def test_valid_signature_verifies():
+    """Verify a correctly signed event."""
     sig = sign_audit_event(SERVICE, DATA, SECRET)
     assert verify_audit_event(SERVICE, DATA, sig, SECRET) is True
 
@@ -30,12 +33,14 @@ def test_valid_signature_verifies():
 # ---------------------------------------------------------------------------
 
 def test_modified_data_fails():
+    """Fail verification when the data was altered after signing."""
     sig = sign_audit_event(SERVICE, DATA, SECRET)
     tampered = DATA.replace("submit", "delete_all")
     assert verify_audit_event(SERVICE, tampered, sig, SECRET) is False
 
 
 def test_even_one_byte_of_modified_data_fails():
+    """Fail verification when even a single byte of the data changes."""
     sig = sign_audit_event(SERVICE, DATA, SECRET)
     tampered = DATA[:-1] + ("0" if DATA[-1] != "0" else "1")
     assert verify_audit_event(SERVICE, tampered, sig, SECRET) is False
@@ -46,6 +51,8 @@ def test_even_one_byte_of_modified_data_fails():
 # ---------------------------------------------------------------------------
 
 def test_modified_service_identity_fails():
+    """Fail verification when checked against a different service identity than the one that signed
+    it."""
     sig = sign_audit_event(SERVICE, DATA, SECRET)
     assert verify_audit_event("gateway", DATA, sig, SECRET) is False
 
@@ -63,6 +70,7 @@ def test_relabeling_a_valid_signature_onto_a_different_service_fails():
 # ---------------------------------------------------------------------------
 
 def test_wrong_secret_fails():
+    """Fail verification when checked against the wrong secret."""
     sig = sign_audit_event(SERVICE, DATA, SECRET)
     assert verify_audit_event(SERVICE, DATA, sig, "a-different-synthetic-secret") is False
 
@@ -86,6 +94,7 @@ def test_wrong_secret_fails():
     ],
 )
 def test_malformed_signature_fails(malformed):
+    """Fail verification for a signature string that is not well-formed."""
     assert verify_audit_event(SERVICE, DATA, malformed, SECRET) is False
 
 
@@ -94,6 +103,7 @@ def test_malformed_signature_fails(malformed):
 # ---------------------------------------------------------------------------
 
 def test_missing_signature_fails():
+    """Fail verification for an empty or None signature."""
     assert verify_audit_event(SERVICE, DATA, "", SECRET) is False
     assert verify_audit_event(SERVICE, DATA, None, SECRET) is False
 
@@ -103,6 +113,7 @@ def test_missing_signature_fails():
 # ---------------------------------------------------------------------------
 
 def test_unsupported_version_fails():
+    """Fail verification for a signature carrying a version prefix other than v1."""
     sig = sign_audit_event(SERVICE, DATA, SECRET)
     _, _, mac_hex = sig.partition(":")
     future_version_sig = f"v2:{mac_hex}"
@@ -124,12 +135,14 @@ def test_unsupported_version_fails_even_with_a_correctly_recomputed_mac():
 # ---------------------------------------------------------------------------
 
 def test_signing_is_deterministic():
+    """Produce the identical signature for the same service, data, and secret across calls."""
     sig1 = sign_audit_event(SERVICE, DATA, SECRET)
     sig2 = sign_audit_event(SERVICE, DATA, SECRET)
     assert sig1 == sig2
 
 
 def test_different_data_produces_different_signature():
+    """Produce a different signature when the data differs."""
     sig1 = sign_audit_event(SERVICE, DATA, SECRET)
     sig2 = sign_audit_event(SERVICE, DATA + "x", SECRET)
     assert sig1 != sig2
@@ -144,10 +157,14 @@ def test_different_data_produces_different_signature():
 # ---------------------------------------------------------------------------
 
 def _tes_iam_cache_mac_key(secret: str) -> bytes:
+    """Derive the TES IAM-cache MAC key from a secret, independently of audit.signing's own key
+    derivation."""
     return hashlib.sha256(f"tes-iam-cache-mac:{secret}".encode()).digest()
 
 
 def _tes_iam_cache_sign(token: str, body: str, secret: str) -> str:
+    """Sign a token/body pair with the TES IAM-cache MAC key, independently of audit.signing's own
+    signing."""
     return hmac.new(_tes_iam_cache_mac_key(secret), f"{token}\n{body}".encode(), hashlib.sha256).hexdigest()
 
 
@@ -190,6 +207,8 @@ def test_reserialized_json_with_different_key_order_fails_verification():
 
 
 def test_whitespace_only_difference_in_data_fails_verification():
+    """Fail verification when the data's whitespace differs, even though the JSON content is
+    equivalent."""
     compact = '{"a":1}'
     spaced = '{"a": 1}'
     sig = sign_audit_event(SERVICE, compact, SECRET)
@@ -203,16 +222,19 @@ def test_whitespace_only_difference_in_data_fails_verification():
 # ---------------------------------------------------------------------------
 
 def test_sign_rejects_empty_service():
+    """Raise ValueError for an empty service."""
     with pytest.raises(ValueError):
         sign_audit_event("", DATA, SECRET)
 
 
 def test_sign_rejects_none_data():
+    """Raise ValueError for None data."""
     with pytest.raises(ValueError):
         sign_audit_event(SERVICE, None, SECRET)
 
 
 def test_signature_format_has_version_prefix():
+    """Produce a signature prefixed with v1: followed by a 64-character sha256 hex digest."""
     sig = sign_audit_event(SERVICE, DATA, SECRET)
     assert sig.startswith("v1:")
     version, _, mac_hex = sig.partition(":")
@@ -234,6 +256,7 @@ def test_verify_rejects_falsy_or_non_string_service_with_otherwise_valid_signatu
 
 
 def test_verify_rejects_none_data_with_otherwise_valid_service_and_signature():
+    """Fail verification when data is None, even with an otherwise valid service and signature."""
     sig = sign_audit_event(SERVICE, DATA, SECRET)
     assert verify_audit_event(SERVICE, None, sig, SECRET) is False
 

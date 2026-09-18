@@ -4,7 +4,10 @@ after a successful DB write.
 
 PR2 additions (bottom of file): integrity_status classification -- signed
 valid/invalid events and unsigned (today's only real traffic shape) all
-persist and ACK; only "invalid" gets the distinct observability print."""
+persist and ACK; only "invalid" gets the distinct observability print.
+
+Developer: Manish Kumar <manish@omnibioai.org>
+"""
 import json
 import runpy
 from unittest.mock import MagicMock, patch
@@ -16,6 +19,7 @@ from audit.signing import sign_audit_event
 
 
 def _raw(event_id="evt-1"):
+    """Build a valid JSON audit-event payload string for the given event id."""
     return json.dumps({
         "event_id": event_id,
         "timestamp": "2026-01-01T12:00:00",
@@ -30,6 +34,7 @@ def _raw(event_id="evt-1"):
 # ---------------------------------------------------------------------------
 
 def test_handle_message_persists_and_acks():
+    """Persist a valid message through the Sink and acknowledge it, closing the database session."""
     reader = MagicMock()
     mock_sink_instance = MagicMock()
     mock_sink_instance.write.return_value = True
@@ -49,6 +54,7 @@ def test_handle_message_persists_and_acks():
 
 
 def test_handle_message_passes_full_event_payload_to_sink():
+    """Hand the Sink the fully parsed event payload with its service and other fields intact."""
     reader = MagicMock()
     mock_sink_instance = MagicMock()
 
@@ -62,6 +68,7 @@ def test_handle_message_passes_full_event_payload_to_sink():
 
 
 def test_handle_message_does_not_ack_on_parse_failure():
+    """Leave a malformed message unacknowledged when it fails to parse."""
     reader = MagicMock()
 
     result = worker.handle_message(reader, "1-0", {"data": "not-json"})
@@ -103,6 +110,7 @@ def test_handle_message_missing_data_field_with_other_fields_present_still_safe(
 
 
 def test_handle_message_does_not_ack_on_db_failure():
+    """Leave a message unacknowledged and close the session when the database write fails."""
     reader = MagicMock()
     mock_sink_instance = MagicMock()
     mock_sink_instance.write.side_effect = Exception("db connection lost")
@@ -144,6 +152,7 @@ def test_handle_message_retry_after_failure_then_succeeds():
 # ---------------------------------------------------------------------------
 
 def test_run_creates_consumer_group_on_startup():
+    """Create the consumer group once when the worker loop starts."""
     mock_reader = MagicMock()
     mock_reader.read_group.return_value = []
 
@@ -154,6 +163,7 @@ def test_run_creates_consumer_group_on_startup():
 
 
 def test_run_processes_messages_from_read_group():
+    """Route messages returned by read_group through handle_message."""
     mock_reader = MagicMock()
     mock_reader.read_group.return_value = [
         (worker.AuditConfig.STREAM_NAME, [("1-0", {"data": _raw("evt-a")})]),
@@ -167,6 +177,7 @@ def test_run_processes_messages_from_read_group():
 
 
 def test_run_stops_after_max_iterations():
+    """Stop after max_iterations loops."""
     mock_reader = MagicMock()
     mock_reader.read_group.return_value = []
 
@@ -286,6 +297,7 @@ def test_run_does_not_swallow_keyboard_interrupt():
 # ---------------------------------------------------------------------------
 
 def test_dunder_main_starts_worker_and_exits_cleanly_on_keyboard_interrupt(capsys):
+    """Print the startup message and exit with status 0 on a keyboard interrupt."""
     mock_reader = MagicMock()
     mock_reader.ensure_group.side_effect = KeyboardInterrupt
 
@@ -326,6 +338,7 @@ def _handle_with_status(fields, secret=SECRET):
 
 
 def test_valid_signed_event_persists_as_valid_and_acks():
+    """Persist a correctly signed event with integrity_status=valid and acknowledge it."""
     raw = _raw(event_id="evt-valid")
     sig = sign_audit_event("auth", raw, SECRET)
 
@@ -348,6 +361,8 @@ def test_unsigned_event_persists_as_unsigned_and_acks():
 
 
 def test_invalid_signature_persists_as_invalid_and_acks():
+    """Persist an event signed with the wrong secret as integrity_status=invalid and still
+    acknowledge it."""
     raw = _raw(event_id="evt-invalid")
     sig = sign_audit_event("auth", raw, "a-different-secret-entirely")
 
@@ -359,6 +374,8 @@ def test_invalid_signature_persists_as_invalid_and_acks():
 
 
 def test_malformed_signature_persists_as_invalid_and_acks():
+    """Persist an event with a malformed signature string as integrity_status=invalid and still
+    acknowledge it."""
     raw = _raw(event_id="evt-malformed-sig")
 
     result, status, reader = _handle_with_status({"data": raw, "sig": "not-a-real-signature"})
@@ -369,6 +386,7 @@ def test_malformed_signature_persists_as_invalid_and_acks():
 
 
 def test_invalid_signature_emits_distinct_observability_message(capsys):
+    """Print a SIGNATURE INVALID message naming the event id for an invalid signature."""
     raw = _raw(event_id="evt-loud-invalid")
     sig = sign_audit_event("auth", raw, "wrong-secret")
 
@@ -380,6 +398,7 @@ def test_invalid_signature_emits_distinct_observability_message(capsys):
 
 
 def test_valid_signature_does_not_emit_the_invalid_message(capsys):
+    """Print no SIGNATURE INVALID message for a validly signed event."""
     raw = _raw(event_id="evt-quiet-valid")
     sig = sign_audit_event("auth", raw, SECRET)
 
@@ -390,6 +409,7 @@ def test_valid_signature_does_not_emit_the_invalid_message(capsys):
 
 
 def test_unsigned_event_does_not_emit_the_invalid_message(capsys):
+    """Print no SIGNATURE INVALID message for an unsigned event."""
     raw = _raw(event_id="evt-quiet-unsigned")
 
     _handle_with_status({"data": raw})
@@ -428,6 +448,8 @@ def test_malformed_json_still_does_not_ack_unchanged_behavior():
 
 
 def test_db_failure_still_does_not_ack_unchanged_behavior():
+    """Leave a message unacknowledged when the database write fails, unchanged by the
+    signature-checking behavior."""
     reader = MagicMock()
     mock_sink_instance = MagicMock()
     mock_sink_instance.write.side_effect = Exception("db connection lost")

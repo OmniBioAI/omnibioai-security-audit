@@ -33,6 +33,8 @@ entries. No evidence of any resulting write to the real
 omnibioai_audit.audit_events table was found; the bug was in this test
 file, not any application code. Every test below patches StreamReader
 for exactly this reason -- do not remove it.
+
+Developer: Manish Kumar <manish@omnibioai.org>
 """
 from unittest.mock import MagicMock, patch
 
@@ -58,6 +60,7 @@ def _reset_recreate_ratelimit_and_alert_dedup():
 
 
 def _nogroup_error():
+    """Build a NOGROUP exception shaped like a real Redis consumer-group-missing error."""
     return Exception("NOGROUP No such key 'audit:events' or consumer group 'audit-workers'")
 
 
@@ -66,6 +69,8 @@ def _nogroup_error():
 # ---------------------------------------------------------------------------
 
 def test_read_group_nogroup_emits_critical_alert(monkeypatch):
+    """Fire a critical audit_stream_or_group_missing alert on the audit-worker component when
+    read_group raises NOGROUP."""
     monkeypatch.setattr(AuditConfig, "WORKER_AUTO_RECREATE_STREAM_ON_NOGROUP", False)
     reader = MagicMock()
     reader.read_group.side_effect = [_nogroup_error(), []]
@@ -85,6 +90,7 @@ def test_read_group_nogroup_emits_critical_alert(monkeypatch):
 
 
 def test_sweep_pending_nogroup_also_emits_alert():
+    """Fire the audit_stream_or_group_missing alert when claim_stale raises NOGROUP too."""
     reader = MagicMock()
     reader.claim_stale.side_effect = _nogroup_error()
 
@@ -119,6 +125,7 @@ def test_non_nogroup_error_does_not_trigger_nogroup_handling(monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_nogroup_on_read_group_applies_backoff(monkeypatch):
+    """Sleep for the configured backoff duration after a NOGROUP error on read_group."""
     monkeypatch.setattr(AuditConfig, "WORKER_AUTO_RECREATE_STREAM_ON_NOGROUP", False)
     monkeypatch.setattr(AuditConfig, "WORKER_NOGROUP_RETRY_BACKOFF_SECONDS", 2.0)
     reader = MagicMock()
@@ -156,6 +163,7 @@ def test_idle_timeout_path_never_sleeps_the_nogroup_backoff():
 # ---------------------------------------------------------------------------
 
 def test_recreation_disabled_by_default_does_not_call_ensure_group_again(monkeypatch):
+    """Call ensure_group only once, at startup, when auto-recreation is disabled."""
     monkeypatch.setattr(AuditConfig, "WORKER_AUTO_RECREATE_STREAM_ON_NOGROUP", False)
     reader = MagicMock()
     reader.read_group.side_effect = [_nogroup_error(), []]
@@ -169,6 +177,7 @@ def test_recreation_disabled_by_default_does_not_call_ensure_group_again(monkeyp
 
 
 def test_recreation_enabled_attempts_ensure_group_on_nogroup(monkeypatch):
+    """Call ensure_group a second time and fire a recovered alert when auto-recreation is enabled."""
     monkeypatch.setattr(AuditConfig, "WORKER_AUTO_RECREATE_STREAM_ON_NOGROUP", True)
     reader = MagicMock()
     reader.read_group.side_effect = [_nogroup_error(), []]
@@ -227,6 +236,7 @@ def test_recreation_attempt_is_rate_limited_not_every_failure(monkeypatch):
 
 
 def test_recreate_failure_does_not_crash_worker(monkeypatch):
+    """Keep the worker running instead of crashing when the recreate attempt itself fails."""
     monkeypatch.setattr(AuditConfig, "WORKER_AUTO_RECREATE_STREAM_ON_NOGROUP", True)
     reader = MagicMock()
     reader.read_group.side_effect = [_nogroup_error(), []]

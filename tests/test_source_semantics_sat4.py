@@ -1,3 +1,9 @@
+"""Validate available_query_evidence's default evidence object: unknown freshness and retention
+dimensions, and UTC-aware timestamps.
+
+Developer: Manish Kumar <manish@omnibioai.org>
+"""
+
 from datetime import timezone
 
 from audit.source_semantics import (
@@ -9,6 +15,8 @@ from audit.source_semantics import (
 
 
 def test_available_evidence_keeps_unknown_dimensions_unknown():
+    """Report freshness and retention as UNKNOWN, with no lag or retention values, and stamp both
+    timestamps in UTC."""
     evidence = available_query_evidence()
     assert evidence.availability is SourceAvailability.AVAILABLE
     assert evidence.freshness.status is FreshnessStatus.UNKNOWN

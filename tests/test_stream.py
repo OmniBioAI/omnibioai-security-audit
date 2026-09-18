@@ -1,3 +1,10 @@
+"""Validate StreamReader with a mocked Redis client: reading new entries via XREAD, consumer-group
+creation and reads, acknowledgement, and claim_stale's stale-entry reclaiming and poison-entry
+detection.
+
+Developer: Manish Kumar <manish@omnibioai.org>
+"""
+
 import pytest
 from redis.exceptions import ResponseError
 
@@ -8,6 +15,7 @@ from audit.config import AuditConfig
 # ---------------------------------------------------------------------------
 
 def test_stream_reader_calls_xread(stream_reader):
+    """Read entries through XREAD from the given last id."""
     reader, mock_redis = stream_reader
     mock_redis.xread.return_value = [("audit:events", [("1-0", {"data": "{}"})])]
 
@@ -20,6 +28,7 @@ def test_stream_reader_calls_xread(stream_reader):
 
 
 def test_stream_reader_default_last_id(stream_reader):
+    """Default the read to start from id 0-0 when none is given."""
     reader, mock_redis = stream_reader
     mock_redis.xread.return_value = []
 
@@ -30,6 +39,7 @@ def test_stream_reader_default_last_id(stream_reader):
 
 
 def test_stream_reader_passes_custom_last_id(stream_reader):
+    """Pass a caller-supplied last id through to XREAD."""
     reader, mock_redis = stream_reader
     mock_redis.xread.return_value = []
 
@@ -40,6 +50,7 @@ def test_stream_reader_passes_custom_last_id(stream_reader):
 
 
 def test_stream_reader_returns_empty_on_timeout(stream_reader):
+    """Return an empty list when XREAD times out with no new entries."""
     reader, mock_redis = stream_reader
     mock_redis.xread.return_value = []
 
@@ -49,6 +60,7 @@ def test_stream_reader_returns_empty_on_timeout(stream_reader):
 
 
 def test_stream_reader_uses_config_stream_name(stream_reader):
+    """Read from the stream name configured in AuditConfig."""
     reader, mock_redis = stream_reader
     mock_redis.xread.return_value = []
 
@@ -59,6 +71,7 @@ def test_stream_reader_uses_config_stream_name(stream_reader):
 
 
 def test_stream_reader_returns_multiple_entries(stream_reader):
+    """Return every entry XREAD reports for a stream."""
     reader, mock_redis = stream_reader
     entries = [
         ("0-1", {"data": '{"event_type": "auth_login"}'}),
@@ -77,6 +90,7 @@ def test_stream_reader_returns_multiple_entries(stream_reader):
 # ---------------------------------------------------------------------------
 
 def test_ensure_group_creates_group(stream_reader):
+    """Create the consumer group with a single XGROUP CREATE call."""
     reader, mock_redis = stream_reader
 
     reader.ensure_group()
@@ -98,6 +112,7 @@ def test_ensure_group_is_idempotent_when_group_exists(stream_reader):
 
 
 def test_ensure_group_reraises_other_response_errors(stream_reader):
+    """Re-raise any ResponseError other than BUSYGROUP raised while creating the group."""
     reader, mock_redis = stream_reader
     mock_redis.xgroup_create.side_effect = ResponseError("NOGROUP some other error")
 
@@ -106,6 +121,7 @@ def test_ensure_group_reraises_other_response_errors(stream_reader):
 
 
 def test_read_group_calls_xreadgroup(stream_reader):
+    """Read new messages through XREADGROUP for the given consumer."""
     reader, mock_redis = stream_reader
     mock_redis.xreadgroup.return_value = []
 
@@ -121,6 +137,7 @@ def test_read_group_calls_xreadgroup(stream_reader):
 
 
 def test_ack_calls_xack(stream_reader):
+    """Acknowledge a message through XACK."""
     reader, mock_redis = stream_reader
 
     reader.ack("1-0")
@@ -135,6 +152,8 @@ def test_ack_calls_xack(stream_reader):
 # ---------------------------------------------------------------------------
 
 def _pending_entry(message_id, times_delivered):
+    """Build an XPENDING-range-style pending entry dict with the given message id and delivery
+    count."""
     return {
         "message_id": message_id,
         "consumer": "some-dead-consumer",
@@ -144,6 +163,8 @@ def _pending_entry(message_id, times_delivered):
 
 
 def test_claim_stale_queries_xpending_range_with_config_defaults(stream_reader):
+    """Query XPENDING_RANGE with the configured default idle time and max count, returning nothing
+    claimed when there is no backlog."""
     reader, mock_redis = stream_reader
     mock_redis.xpending_range.return_value = []
 
@@ -162,6 +183,7 @@ def test_claim_stale_queries_xpending_range_with_config_defaults(stream_reader):
 
 
 def test_claim_stale_returns_empty_when_nothing_stale(stream_reader):
+    """Return no claimed or poison entries, and never call XCLAIM or XACK, when nothing is stale."""
     reader, mock_redis = stream_reader
     mock_redis.xpending_range.return_value = []
 
@@ -174,6 +196,7 @@ def test_claim_stale_returns_empty_when_nothing_stale(stream_reader):
 
 
 def test_claim_stale_reclaims_entries_under_max_deliveries(stream_reader):
+    """Reclaim a stale entry under the max-deliveries threshold via XCLAIM without acking it."""
     reader, mock_redis = stream_reader
     mock_redis.xpending_range.return_value = [_pending_entry("5-0", times_delivered=2)]
     mock_redis.xclaim.return_value = [("5-0", {"data": "{}"})]
@@ -232,6 +255,7 @@ def test_claim_stale_poison_entry_with_no_xrange_result_gets_empty_fields(stream
 
 
 def test_claim_stale_splits_a_mixed_batch_correctly(stream_reader):
+    """Split a mixed batch into reclaimed entries and poison entries by delivery count."""
     reader, mock_redis = stream_reader
     mock_redis.xpending_range.return_value = [
         _pending_entry("7-0", times_delivered=1),
@@ -257,6 +281,7 @@ def test_claim_stale_splits_a_mixed_batch_correctly(stream_reader):
 
 
 def test_claim_stale_honors_explicit_overrides_over_config_defaults(stream_reader):
+    """Use caller-supplied idle time and count overrides in place of the config defaults."""
     reader, mock_redis = stream_reader
     mock_redis.xpending_range.return_value = []
 

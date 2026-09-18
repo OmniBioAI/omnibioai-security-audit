@@ -10,6 +10,8 @@ the maintenance identity, TRUNCATE denial via privilege absence,
 quarantine-table parity, and the provisioning/retention/verification
 scripts exercised as subprocesses against this same real database --
 proving the actual shipped tooling, not a reimplementation of it.
+
+Developer: Manish Kumar <manish@omnibioai.org>
 """
 import os
 import subprocess
@@ -47,6 +49,8 @@ _PROVISIONED_USER_NAMES = ("audit_writer", "audit_reader", "audit_maintenance")
 
 
 def _real_mysql_available():
+    """Report whether the configured test-MySQL root URL is reachable, returning False when
+    unconfigured or unreachable."""
     if TEST_MYSQL_ROOT_URL is None:
         return False
     try:
@@ -169,6 +173,8 @@ def _integration_test_secret() -> str:
 
 
 def _insert_valid_event(admin_url: str, event_id: str, days_old: int = 0) -> None:
+    """Insert one valid audit event at the given age and confirm it is visible immediately after
+    commit."""
     from sqlalchemy.orm import sessionmaker
 
     from consumers.sink import Sink
@@ -207,6 +213,7 @@ def _insert_valid_event(admin_url: str, event_id: str, days_old: int = 0) -> Non
 # ---------------------------------------------------------------------------
 
 def test_real_update_is_denied_for_every_identity(real_mysql_db, provisioned_users):
+    """Deny an UPDATE on audit_events for both the root and writer credentials."""
     _insert_valid_event(real_mysql_db, "evt-no-update")
 
     for label, url in (("root", real_mysql_db), ("writer", provisioned_users["writer"])):
@@ -220,6 +227,8 @@ def test_real_update_is_denied_for_every_identity(real_mysql_db, provisioned_use
 
 
 def test_real_delete_is_denied_for_root_and_writer_and_reader(real_mysql_db, provisioned_users):
+    """Deny a DELETE on audit_events for the root, writer, and reader credentials, leaving the row
+    in place."""
     _insert_valid_event(real_mysql_db, "evt-no-delete")
 
     for label, url in (
@@ -241,6 +250,7 @@ def test_real_delete_is_denied_for_root_and_writer_and_reader(real_mysql_db, pro
 
 
 def test_real_delete_succeeds_for_audit_maintenance_without_a_hold(real_mysql_db, provisioned_users):
+    """Allow the maintenance credential to delete an audit_events row that carries no legal hold."""
     _insert_valid_event(real_mysql_db, "evt-maintenance-delete")
 
     engine = create_engine(provisioned_users["maintenance"])
@@ -256,6 +266,7 @@ def test_real_delete_succeeds_for_audit_maintenance_without_a_hold(real_mysql_db
 
 
 def test_real_legal_hold_blocks_deletion_even_for_audit_maintenance(real_mysql_db, provisioned_users):
+    """Deny the maintenance credential's delete of a row that is under legal hold."""
     _insert_valid_event(real_mysql_db, "evt-held")
 
     maint_engine = create_engine(provisioned_users["maintenance"])
@@ -295,6 +306,7 @@ def test_real_legal_hold_blocks_deletion_even_for_audit_maintenance(real_mysql_d
 # ---------------------------------------------------------------------------
 
 def test_real_truncate_denied_for_writer_and_reader_via_privilege_absence(provisioned_users):
+    """Deny TRUNCATE on audit_events for the writer and reader credentials with a privilege error."""
     for label, url in (("writer", provisioned_users["writer"]), ("reader", provisioned_users["reader"])):
         engine = create_engine(url)
         with engine.connect() as conn, pytest.raises(Exception) as exc_info:
@@ -308,6 +320,7 @@ def test_real_truncate_denied_for_writer_and_reader_via_privilege_absence(provis
 # ---------------------------------------------------------------------------
 
 def test_real_quarantine_table_update_and_delete_denied_same_as_canonical(real_mysql_db, provisioned_users):
+    """Deny UPDATE and DELETE on the quarantine table the same way they are denied on audit_events."""
     from sqlalchemy.orm import sessionmaker
 
     from consumers.quarantine import QuarantineSink
@@ -342,6 +355,7 @@ def test_real_quarantine_table_update_and_delete_denied_same_as_canonical(real_m
 # ---------------------------------------------------------------------------
 
 def test_real_legal_hold_record_cannot_be_updated(provisioned_users):
+    """Deny an UPDATE on an audit_legal_holds row."""
     maint_engine = create_engine(provisioned_users["maintenance"])
     with maint_engine.connect() as conn:
         conn.execute(text(
@@ -367,6 +381,7 @@ def test_real_legal_hold_record_cannot_be_updated(provisioned_users):
 # ---------------------------------------------------------------------------
 
 def test_real_writer_can_insert_and_select_but_not_mutate(provisioned_users):
+    """Allow the writer credential to insert and select but deny it any mutation."""
     engine = create_engine(provisioned_users["writer"])
     with engine.connect() as conn:
         conn.execute(text(
@@ -380,6 +395,7 @@ def test_real_writer_can_insert_and_select_but_not_mutate(provisioned_users):
 
 
 def test_real_reader_can_select_but_cannot_insert(provisioned_users):
+    """Allow the reader credential to select but deny it an insert."""
     engine = create_engine(provisioned_users["reader"])
     with engine.connect() as conn:
         conn.execute(text("SELECT COUNT(*) FROM audit_events")).scalar_one()  # must not raise
@@ -399,6 +415,8 @@ def test_real_reader_can_select_but_cannot_insert(provisioned_users):
 # ---------------------------------------------------------------------------
 
 def test_real_retention_cleanup_dry_run_then_execute_respects_legal_hold(real_mysql_db, provisioned_users):
+    """Report, but not delete, eligible rows on a dry run, then delete only the non-held eligible
+    row on execute, leaving the held and recent rows."""
     _insert_valid_event(real_mysql_db, "evt-retention-old", days_old=200)
     _insert_valid_event(real_mysql_db, "evt-retention-recent", days_old=1)
     _insert_valid_event(real_mysql_db, "evt-retention-old-held", days_old=300)
@@ -443,6 +461,8 @@ def test_real_retention_cleanup_dry_run_then_execute_respects_legal_hold(real_my
 
 
 def test_real_retention_cleanup_fails_closed_without_retention_days(provisioned_users):
+    """Exit as a successful no-op, reporting AUDIT_RETENTION_DAYS not set, rather than deleting
+    anything."""
     env = {k: v for k, v in os.environ.items() if k != "AUDIT_RETENTION_DAYS"}
     env["AUDIT_MAINTENANCE_DATABASE_URL"] = provisioned_users["maintenance"]
     result = subprocess.run(
@@ -454,6 +474,8 @@ def test_real_retention_cleanup_fails_closed_without_retention_days(provisioned_
 
 
 def test_real_retention_cleanup_fails_closed_with_a_non_maintenance_credential(real_mysql_db, provisioned_users):
+    """Fail the cleanup script against a non-maintenance credential, with the database trigger
+    independently rejecting any deletion it attempted."""
     _insert_valid_event(real_mysql_db, "evt-retention-writer-guard", days_old=200)
 
     env = {**os.environ, "AUDIT_MAINTENANCE_DATABASE_URL": provisioned_users["writer"], "AUDIT_RETENTION_DAYS": "1"}
@@ -490,6 +512,7 @@ def test_real_retention_cleanup_fails_closed_with_a_non_maintenance_credential(r
 # ---------------------------------------------------------------------------
 
 def test_real_verify_audit_integrity_tool_distinguishes_valid_from_tampered(real_mysql_db, provisioned_users):
+    """Report a tampered event as invalid and a valid event as not invalid."""
     from sqlalchemy.orm import sessionmaker
 
     from scripts.verify_audit_integrity import verify_audit_events

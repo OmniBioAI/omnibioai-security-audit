@@ -14,6 +14,8 @@ mysql+pymysql://root:<password>@127.0.0.1:33061/mysql) -- they skip,
 not fail, when that isolated instance isn't reachable, matching this
 suite's existing convention. Cases A, B, C, E need no live server at
 all: they test pure validation logic that never attempts a connection.
+
+Developer: Manish Kumar <manish@omnibioai.org>
 """
 import os
 
@@ -34,6 +36,7 @@ _PRODUCTION_NAMES = ("audit_writer", "audit_reader", "audit_maintenance")
 
 
 def _sql_quoted_list(names) -> str:
+    """Join a list of names into a comma-separated, single-quoted SQL literal list."""
     return ", ".join("'" + n + "'" for n in names)
 
 
@@ -85,6 +88,7 @@ def test_b_c_production_port_rejected_before_any_connection_attempt(monkeypatch,
 
 
 def test_b_c_rejection_message_names_the_forbidden_port():
+    """Name the forbidden port in the error raised for a URL that resolves to it."""
     with pytest.raises(ProductionMySQLEndpointRejected, match=str(FORBIDDEN_PORT)):
         validate_test_mysql_url("mysql+pymysql://root:root@localhost:3306/mysql")
 
@@ -95,6 +99,8 @@ _ISOLATED_TEST_URL = os.environ.get("B0_TEST_ISOLATION_MYSQL_URL")
 
 
 def _isolated_mysql_available():
+    """Report whether the configured isolated test-MySQL URL is reachable, returning False when
+    unconfigured or unreachable."""
     if not _ISOLATED_TEST_URL:
         return False
     try:
@@ -114,6 +120,7 @@ _isolated_skip = pytest.mark.skipif(
 
 
 def test_d_validation_accepts_non_production_port():
+    """Accept a URL on a non-production port unchanged."""
     assert validate_test_mysql_url("mysql+pymysql://root:root@127.0.0.1:33061/mysql") == (
         "mysql+pymysql://root:root@127.0.0.1:33061/mysql"
     )
@@ -121,6 +128,7 @@ def test_d_validation_accepts_non_production_port():
 
 @_isolated_skip
 def test_d_isolated_endpoint_is_a_real_usable_mysql_server():
+    """Execute a real query against the configured isolated MySQL instance and get back its result."""
     engine = create_engine(_ISOLATED_TEST_URL)
     with engine.connect() as conn:
         result = conn.execute(text("SELECT 1")).scalar()
@@ -130,6 +138,8 @@ def test_d_isolated_endpoint_is_a_real_usable_mysql_server():
 # --- E: unique test principal naming ---------------------------------------
 
 def test_e_unique_identifiers_are_distinct_and_within_mysql_username_limit():
+    """Generate 20 distinct identifiers, each within MySQL's 32-character username limit and
+    prefixed as expected."""
     names = {unique_test_identifier("audit_writer") for _ in range(20)}
     assert len(names) == 20, "each call must produce a distinct name"
     for name in names:
@@ -138,6 +148,7 @@ def test_e_unique_identifiers_are_distinct_and_within_mysql_username_limit():
 
 
 def test_e_unique_identifier_trims_long_prefix_not_the_random_suffix():
+    """Trim an oversized prefix down to the length budget while keeping the random suffix intact."""
     long_prefix = "a" * 40
     name = unique_test_identifier(long_prefix, max_length=32)
     assert len(name) <= 32

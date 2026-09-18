@@ -19,6 +19,8 @@ regression coverage for environments (like local dev-stack validation)
 where real backends exist, not a hard CI requirement introduced by this
 PR -- see the B0 report for why that's a deliberate, separately-flagged
 follow-up rather than bundled into this change.
+
+Developer: Manish Kumar <manish@omnibioai.org>
 """
 import json
 import os
@@ -60,6 +62,8 @@ TEST_STREAM = f"audit:events:b0-test-{uuid.uuid4().hex[:8]}"
 
 
 def _real_backends_available():
+    """Report whether both the configured test-MySQL root URL and test-Redis URL are reachable,
+    returning False when either is unconfigured or unreachable."""
     if TEST_MYSQL_ROOT_URL is None or TEST_REDIS_URL is None:
         return False
     try:
@@ -214,6 +218,7 @@ def test_real_produce_consume_persist_ack_round_trip(real_redis_stream, real_mys
 
 
 def _integration_payload(event_id, service="b0-integration-test", **overrides):
+    """Build a valid JSON audit-event payload string for the given event id and service."""
     from datetime import datetime, timezone
 
     payload = {
@@ -290,6 +295,8 @@ def _run_real_round_trip(real_redis_stream, real_mysql_url, monkeypatch, event_i
 # ---------------------------------------------------------------------------
 
 def test_real_valid_signed_event_persists_as_valid(real_redis_stream, real_mysql_url, monkeypatch):
+    """Persist a correctly signed event with integrity_status=valid through a real XADD-to-worker
+    round trip."""
     from audit.config import AuditConfig
     from audit.signing import sign_audit_event
 
@@ -305,6 +312,8 @@ def test_real_valid_signed_event_persists_as_valid(real_redis_stream, real_mysql
 
 
 def test_real_unsigned_event_persists_as_unsigned(real_redis_stream, real_mysql_url, monkeypatch):
+    """Persist an unsigned event with integrity_status=unsigned through a real XADD-to-worker round
+    trip."""
     event_id = f"pr2-unsigned-{uuid.uuid4()}"
     row = _run_real_round_trip(
         real_redis_stream, real_mysql_url, monkeypatch,
@@ -315,6 +324,8 @@ def test_real_unsigned_event_persists_as_unsigned(real_redis_stream, real_mysql_
 
 
 def test_real_invalid_signed_event_persists_as_invalid(real_redis_stream, real_mysql_url, monkeypatch):
+    """Persist an event signed with the wrong secret as integrity_status=invalid through a real
+    XADD-to-worker round trip."""
     from audit.config import AuditConfig
     from audit.signing import sign_audit_event
 

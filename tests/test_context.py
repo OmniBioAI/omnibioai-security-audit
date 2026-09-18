@@ -1,3 +1,10 @@
+"""Validate the contextvars-backed trace/user/identity context: default values, setting and
+overwriting trace_id and user_id, inject_context's UUID trace id generation, and verified-
+identity propagation from a valid token.
+
+Developer: Manish Kumar <manish@omnibioai.org>
+"""
+
 import jwt
 import pytest
 from audit.context import (
@@ -13,11 +20,13 @@ SECRET = "test-secret"
 
 
 def _token(**claims):
+    """Sign an HS256 test token with the shared test secret, applying any extra claims."""
     return jwt.encode(claims, SECRET, algorithm="HS256")
 
 
 @pytest.fixture(autouse=True)
 def _patch_secret(monkeypatch):
+    """Point the JWT verifier at the shared test secret for every test in this module."""
     # SSO Phase 2 PR3: decoding now happens in audit.jwt_verify, not
     # audit.identity -- identity_module no longer has its own JWT_SECRET.
     monkeypatch.setattr(jwt_verify_module, "JWT_SECRET", SECRET)
@@ -28,6 +37,7 @@ def _patch_secret(monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_trace_id_default_is_none():
+    """Default trace_id to None before it is set."""
     # Reset to default
     token = trace_id_var.set(None)
     try:
@@ -37,6 +47,7 @@ def test_trace_id_default_is_none():
 
 
 def test_set_and_get_trace_id():
+    """Store and retrieve a trace_id set on the context."""
     token = trace_id_var.set(None)
     try:
         set_trace_id("trace-abc-123")
@@ -46,6 +57,7 @@ def test_set_and_get_trace_id():
 
 
 def test_trace_id_can_be_overwritten():
+    """Overwrite an existing trace_id with a newly set value."""
     token = trace_id_var.set(None)
     try:
         set_trace_id("first")
@@ -60,6 +72,7 @@ def test_trace_id_can_be_overwritten():
 # ---------------------------------------------------------------------------
 
 def test_user_id_default_is_none():
+    """Default user_id to None before it is set."""
     token = user_id_var.set(None)
     try:
         assert get_user_id() is None
@@ -68,6 +81,7 @@ def test_user_id_default_is_none():
 
 
 def test_set_and_get_user_id():
+    """Store and retrieve a user_id set on the context."""
     token = user_id_var.set(None)
     try:
         set_user_id("user-xyz")
@@ -77,6 +91,7 @@ def test_set_and_get_user_id():
 
 
 def test_user_id_can_be_overwritten():
+    """Overwrite an existing user_id with a newly set value."""
     token = user_id_var.set(None)
     try:
         set_user_id("user1")
@@ -91,6 +106,7 @@ def test_user_id_can_be_overwritten():
 # ---------------------------------------------------------------------------
 
 def test_inject_context_sets_trace_id():
+    """Set the context's trace_id to the value inject_context generates and returns."""
     token_t = trace_id_var.set(None)
     token_u = user_id_var.set(None)
     try:
@@ -103,6 +119,7 @@ def test_inject_context_sets_trace_id():
 
 
 def test_inject_context_sets_user_id():
+    """Set the context's user_id to the value passed into inject_context."""
     token_t = trace_id_var.set(None)
     token_u = user_id_var.set(None)
     try:
@@ -114,18 +131,21 @@ def test_inject_context_sets_user_id():
 
 
 def test_inject_context_returns_uuid_string():
+    """Return a 36-character UUID4-format string from inject_context."""
     trace_id = inject_context()
     assert isinstance(trace_id, str)
     assert len(trace_id) == 36
 
 
 def test_inject_context_generates_unique_trace_ids():
+    """Generate a distinct trace id on each inject_context call."""
     t1 = inject_context()
     t2 = inject_context()
     assert t1 != t2
 
 
 def test_inject_context_without_user_id():
+    """Leave user_id unset when inject_context is called without one."""
     token_u = user_id_var.set(None)
     try:
         inject_context()
@@ -139,6 +159,7 @@ def test_inject_context_without_user_id():
 # ---------------------------------------------------------------------------
 
 def test_inject_context_with_valid_token_sets_verified_identity():
+    """Populate the identity context with the verified subject and email from a valid access token."""
     token_u = user_id_var.set(None)
     token_i = identity_var.set(None)
     try:

@@ -33,6 +33,8 @@ Two guards, mirroring _mysql_integration_guard.py exactly:
    different port. There is deliberately no escape hatch -- there is no
    supported mode where these tests intentionally operate against the
    shared production-adjacent instance.
+
+Developer: Manish Kumar <manish@omnibioai.org>
 """
 from __future__ import annotations
 

@@ -4,6 +4,8 @@ revocation) both api/deps.py and audit/identity.py now delegate to.
 
 SSO Phase 2 PR16: adds coverage for the RS256/JWKS verification path
 added alongside the existing HS256 path.
+
+Developer: Manish Kumar <manish@omnibioai.org>
 """
 import datetime as dt
 from unittest.mock import MagicMock
@@ -29,14 +31,17 @@ _OTHER_PUBLIC_KEY = _OTHER_PRIVATE_KEY.public_key()
 
 
 def _token(**claims):
+    """Sign an HS256 test token with the shared test secret, applying any extra claims."""
     return jwt.encode(claims, SECRET, algorithm="HS256")
 
 
 def _rs256_token(private_key, kid, **claims):
+    """Sign an RS256 test token with the given private key and key id, applying any extra claims."""
     return jwt.encode(claims, private_key, algorithm="RS256", headers={"kid": kid})
 
 
 def _jwk(public_key, kid: str) -> dict:
+    """Build a JWKS entry from the given RSA public key and key id."""
     jwk = RSAAlgorithm.to_jwk(public_key, as_dict=True)
     jwk.update({"kid": kid, "use": "sig", "alg": "RS256"})
     return jwk
@@ -44,6 +49,7 @@ def _jwk(public_key, kid: str) -> dict:
 
 @pytest.fixture(autouse=True)
 def _patch_secret(monkeypatch):
+    """Point the JWT verifier at the shared test secret for every test in this module."""
     monkeypatch.setattr(jwt_verify_module, "JWT_SECRET", SECRET)
 
 
@@ -83,6 +89,7 @@ def install_jwks(*jwks_responses: dict) -> MagicMock:
 # ---------------------------------------------------------------------------
 
 def test_valid_token_succeeds():
+    """Return the decoded payload for a valid HS256 access token."""
     token = _token(sub="1", roles=["platform_admin"], type="access")
     payload = verify_token(token)
     assert payload["sub"] == "1"
@@ -98,6 +105,7 @@ def test_valid_token_without_type_claim_succeeds():
 
 
 def test_platform_issuer_and_audience_contract():
+    """Accept the platform issuer and audience and reject a token with the wrong audience or issuer."""
     valid = _token(sub="1", iss="omnibioai-auth", aud="omnibioai-platform")
     assert verify_token(valid)["aud"] == "omnibioai-platform"
 
@@ -115,6 +123,7 @@ def test_platform_issuer_and_audience_contract():
 # ---------------------------------------------------------------------------
 
 def test_missing_token_raises():
+    """Raise TokenInvalid for a None or empty token."""
     with pytest.raises(TokenInvalid):
         verify_token(None)
     with pytest.raises(TokenInvalid):
@@ -122,17 +131,20 @@ def test_missing_token_raises():
 
 
 def test_invalid_signature_raises():
+    """Raise TokenInvalid for a token signed with the wrong secret."""
     token = jwt.encode({"sub": "1"}, "wrong-secret", algorithm="HS256")
     with pytest.raises(TokenInvalid):
         verify_token(token)
 
 
 def test_malformed_token_raises():
+    """Raise TokenInvalid for a string that is not a valid JWT."""
     with pytest.raises(TokenInvalid):
         verify_token("not-a-real-token")
 
 
 def test_expired_token_raises():
+    """Raise TokenInvalid for an expired token."""
     token = jwt.encode(
         {"sub": "1", "exp": dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=1)},
         SECRET,
@@ -143,6 +155,7 @@ def test_expired_token_raises():
 
 
 def test_missing_sub_claim_raises():
+    """Raise TokenInvalid for a token that carries no sub claim."""
     token = _token(email="x@y.com")
     with pytest.raises(TokenInvalid):
         verify_token(token)
@@ -160,6 +173,7 @@ def test_wrong_token_type_raises():
 
 
 def test_other_token_types_also_rejected():
+    """Raise TokenInvalid for token types other than access, such as oauth_state."""
     for bad_type in ("oauth_state", "sso_state", "oauth_link"):
         token = _token(sub="1", type=bad_type)
         with pytest.raises(TokenInvalid):
@@ -171,6 +185,7 @@ def test_other_token_types_also_rejected():
 # ---------------------------------------------------------------------------
 
 def test_blacklisted_jti_raises(mock_blacklist):
+    """Raise TokenInvalid and check the blacklist for a token whose jti has been revoked."""
     mock_blacklist.exists.return_value = True
     token = _token(sub="1", jti="revoked-jti-123")
     with pytest.raises(TokenInvalid):
@@ -179,6 +194,7 @@ def test_blacklisted_jti_raises(mock_blacklist):
 
 
 def test_non_blacklisted_jti_succeeds(mock_blacklist):
+    """Accept a token whose jti is checked against the blacklist and found not revoked."""
     mock_blacklist.exists.return_value = False
     token = _token(sub="1", jti="fine-jti-456")
     payload = verify_token(token)
@@ -186,6 +202,7 @@ def test_non_blacklisted_jti_succeeds(mock_blacklist):
 
 
 def test_token_without_jti_skips_blacklist_check(mock_blacklist):
+    """Skip the blacklist check entirely for a token that carries no jti claim."""
     token = _token(sub="1")  # no jti claim at all
     payload = verify_token(token)
     assert payload["sub"] == "1"
@@ -210,6 +227,7 @@ def test_blacklist_redis_error_fails_open(monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_valid_rs256_token_succeeds():
+    """Return the decoded payload for a valid RS256 token verified against a fetched JWKS key."""
     install_jwks({"keys": [_jwk(_PUBLIC_KEY, KID)]})
     token = _rs256_token(_PRIVATE_KEY, KID, sub="1", roles=["platform_admin"], type="access")
     payload = verify_token(token)
@@ -267,12 +285,14 @@ def test_jwks_fetch_failure_fails_closed():
 
 
 def test_rs256_token_missing_kid_raises():
+    """Raise TokenInvalid for an RS256 token whose header carries no kid."""
     token = jwt.encode({"sub": "1"}, _PRIVATE_KEY, algorithm="RS256")
     with pytest.raises(TokenInvalid):
         verify_token(token)
 
 
 def test_expired_rs256_token_raises():
+    """Raise TokenInvalid for an expired RS256 token."""
     install_jwks({"keys": [_jwk(_PUBLIC_KEY, KID)]})
     token = _rs256_token(
         _PRIVATE_KEY,

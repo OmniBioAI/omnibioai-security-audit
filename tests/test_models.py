@@ -9,6 +9,8 @@ override these fields shared the exact same event_id and the exact same,
 permanently frozen timestamp for the life of the process. These tests
 construct two separate instances (with a real delay for the timestamp
 case) and assert they differ -- the check that would have caught the bug.
+
+Developer: Manish Kumar <manish@omnibioai.org>
 """
 import time
 from datetime import datetime, timezone
@@ -19,12 +21,14 @@ from audit.models import AuditEvent
 
 
 def test_event_id_differs_across_instances():
+    """Assign a distinct event_id to each AuditEvent instance."""
     e1 = AuditEvent(service="svc", event_type="test")
     e2 = AuditEvent(service="svc", event_type="test")
     assert e1.event_id != e2.event_id
 
 
 def test_timestamp_differs_across_instances():
+    """Advance the timestamp for each AuditEvent constructed later."""
     e1 = AuditEvent(service="svc", event_type="test")
     time.sleep(0.05)
     e2 = AuditEvent(service="svc", event_type="test")
@@ -33,17 +37,20 @@ def test_timestamp_differs_across_instances():
 
 
 def test_explicitly_supplied_event_id_is_respected():
+    """Preserve an explicitly supplied event_id instead of generating one."""
     event = AuditEvent(service="svc", event_type="test", event_id="fixed-id-123")
     assert event.event_id == "fixed-id-123"
 
 
 def test_organization_tenant_scope_requires_first_class_id():
+    """Reject tenant_scope=organization when no organization_id is supplied."""
     from pydantic import ValidationError
     with pytest.raises(ValidationError):
         AuditEvent(service="svc", event_type="test", tenant_scope="organization")
 
 
 def test_global_and_unknown_are_distinct():
+    """Distinguish an explicit global tenant_scope from the default unknown scope."""
     global_event = AuditEvent(service="svc", event_type="maintenance", tenant_scope="global")
     unknown_event = AuditEvent(service="svc", event_type="test")
     assert global_event.tenant_scope == "global"
@@ -59,6 +66,7 @@ def test_organization_id_alone_promotes_scope_to_organization():
 
 
 def test_organization_id_with_explicit_non_organization_scope_is_rejected():
+    """Reject an organization_id paired with a tenant_scope other than organization."""
     from pydantic import ValidationError
     with pytest.raises(ValidationError):
         AuditEvent(
@@ -68,6 +76,7 @@ def test_organization_id_with_explicit_non_organization_scope_is_rejected():
 
 
 def test_explicitly_supplied_timestamp_is_respected():
+    """Preserve an explicitly supplied timestamp instead of generating one."""
     fixed = datetime(2024, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
     event = AuditEvent(service="svc", event_type="test", timestamp=fixed)
     assert event.timestamp == fixed

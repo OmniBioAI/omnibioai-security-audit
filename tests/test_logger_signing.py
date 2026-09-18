@@ -8,6 +8,8 @@ audit.signing itself and imports it directly: no drift risk, no parallel
 copy to keep in sync. These tests exercise AuditLogger.log()'s new
 signing behavior specifically; tests/test_signing.py already covers
 sign_audit_event/verify_audit_event in isolation and is untouched.
+
+Developer: Manish Kumar <manish@omnibioai.org>
 """
 import json
 from unittest.mock import AsyncMock
@@ -21,6 +23,7 @@ from audit.signing import verify_audit_event
 
 @pytest.mark.asyncio
 async def test_log_signs_the_exact_data_string_it_publishes(audit_logger, monkeypatch):
+    """Sign exactly the data string that gets published, verifiable against the same secret."""
     logger, mock_redis = audit_logger
     mock_redis.xadd = AsyncMock()
     monkeypatch.setattr(AuditConfig, "EVENT_SIGNING_SECRET", "s3cr3t")
@@ -37,6 +40,7 @@ async def test_log_signs_the_exact_data_string_it_publishes(audit_logger, monkey
 
 @pytest.mark.asyncio
 async def test_log_includes_both_data_and_sig_fields(audit_logger, monkeypatch):
+    """Publish both a data field and a v1:-prefixed sig field."""
     logger, mock_redis = audit_logger
     mock_redis.xadd = AsyncMock()
     monkeypatch.setattr(AuditConfig, "EVENT_SIGNING_SECRET", "s3cr3t")
@@ -50,6 +54,7 @@ async def test_log_includes_both_data_and_sig_fields(audit_logger, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_log_signature_does_not_verify_under_a_different_secret(audit_logger, monkeypatch):
+    """Fail verification when checked against a secret other than the one that signed it."""
     logger, mock_redis = audit_logger
     mock_redis.xadd = AsyncMock()
     monkeypatch.setattr(AuditConfig, "EVENT_SIGNING_SECRET", "s3cr3t")
@@ -104,6 +109,7 @@ async def test_log_without_a_service_still_publishes_unsigned(audit_logger, monk
 
 @pytest.mark.asyncio
 async def test_log_exception_never_leaks_the_secret(audit_logger, monkeypatch, capsys):
+    """Never print the signing secret to stdout or stderr when logging raises."""
     logger, mock_redis = audit_logger
     mock_redis.xadd = AsyncMock(side_effect=RuntimeError("boom"))
     monkeypatch.setattr(AuditConfig, "EVENT_SIGNING_SECRET", "super-secret-value")

@@ -28,6 +28,8 @@ own first version of the relevant unit tests -- see below):
    (~50% of random datetime.now() values) failure in a real end-to-end
    integration test run. See
    test_timestamp_at_or_above_rounding_boundary_rounds_up_to_the_next_second.
+
+Developer: Manish Kumar <manish@omnibioai.org>
 """
 from datetime import datetime
 
@@ -40,6 +42,7 @@ from audit.record_integrity import (
 
 
 def _base_audit_event(**overrides):
+    """Build a valid base audit-event record dict for hashing, applying any field overrides."""
     record = {
         "event_id": "evt-1",
         "timestamp": datetime(2026, 9, 16, 12, 0, 0),  # noqa: DTZ001 -- naive column, matches AuditEventRecord.timestamp convention
@@ -61,6 +64,7 @@ def _base_audit_event(**overrides):
 
 
 def _base_quarantine_record(**overrides):
+    """Build a valid base quarantine-record dict for hashing, applying any field overrides."""
     record = {
         "stream_message_id": "1-0",
         "raw_data": '{"service":"test"}',
@@ -82,18 +86,21 @@ SECRET = "test-secret-value"
 # ---------------------------------------------------------------------------
 
 def test_audit_event_hash_verifies_for_unmodified_record():
+    """Verify an audit event's hash against its own unmodified record."""
     record = _base_audit_event()
     record["record_integrity_hash"] = compute_audit_event_hash(record, SECRET)
     assert verify_audit_event_hash(record, SECRET) is True
 
 
 def test_quarantine_record_hash_verifies_for_unmodified_record():
+    """Verify a quarantine record's hash against its own unmodified record."""
     record = _base_quarantine_record()
     record["record_integrity_hash"] = compute_quarantine_record_hash(record, SECRET)
     assert verify_quarantine_record_hash(record, SECRET) is True
 
 
 def test_audit_event_hash_fails_when_any_covered_field_changes():
+    """Fail verification once a hash-covered audit-event field is changed."""
     record = _base_audit_event()
     record["record_integrity_hash"] = compute_audit_event_hash(record, SECRET)
     record["action"] = "TAMPERED"
@@ -101,6 +108,7 @@ def test_audit_event_hash_fails_when_any_covered_field_changes():
 
 
 def test_quarantine_record_hash_fails_when_any_covered_field_changes():
+    """Fail verification once a hash-covered quarantine-record field is changed."""
     record = _base_quarantine_record()
     record["record_integrity_hash"] = compute_quarantine_record_hash(record, SECRET)
     record["failure_category"] = "TAMPERED"
@@ -108,18 +116,21 @@ def test_quarantine_record_hash_fails_when_any_covered_field_changes():
 
 
 def test_verify_fails_closed_when_hash_is_missing():
+    """Fail verification, not raise, when the stored hash is missing."""
     record = _base_audit_event()
     record["record_integrity_hash"] = None
     assert verify_audit_event_hash(record, SECRET) is False
 
 
 def test_verify_fails_closed_with_wrong_secret():
+    """Fail record-hash verification when checked against the wrong secret."""
     record = _base_audit_event()
     record["record_integrity_hash"] = compute_audit_event_hash(record, SECRET)
     assert verify_audit_event_hash(record, "a-different-secret") is False
 
 
 def test_verify_never_raises_on_malformed_record():
+    """Return False instead of raising for a completely empty record."""
     assert verify_audit_event_hash({}, SECRET) is False
     assert verify_quarantine_record_hash({}, SECRET) is False
 
@@ -131,6 +142,7 @@ def test_verify_never_raises_on_malformed_record():
 # ---------------------------------------------------------------------------
 
 def test_context_as_dict_and_as_equivalent_json_string_hash_identically():
+    """Hash an equivalent context identically whether it is given as a dict or as its JSON string."""
     as_dict = _base_audit_event(context={"a": 1, "b": [1, 2, 3]})
     as_json_string = _base_audit_event(context='{"a": 1, "b": [1, 2, 3]}')
 
@@ -141,6 +153,7 @@ def test_context_as_dict_and_as_equivalent_json_string_hash_identically():
 
 
 def test_context_key_order_does_not_affect_the_hash():
+    """Hash a context dict identically regardless of key order."""
     record_a = _base_audit_event(context={"a": 1, "b": 2})
     record_b = _base_audit_event(context={"b": 2, "a": 1})
 
@@ -176,6 +189,7 @@ def test_a_hash_computed_from_a_dict_verifies_against_a_row_shaped_as_json_strin
 # ---------------------------------------------------------------------------
 
 def test_timestamp_below_rounding_boundary_truncates_down():
+    """Hash a sub-half-second timestamp the same as its truncated whole second."""
     below_half = _base_audit_event(timestamp=datetime(2026, 9, 16, 12, 0, 0, 499999))  # noqa: DTZ001 -- naive column, matches AuditEventRecord.timestamp convention
     whole_second = _base_audit_event(timestamp=datetime(2026, 9, 16, 12, 0, 0, 0))  # noqa: DTZ001 -- same as above
 
@@ -223,6 +237,7 @@ def test_different_whole_second_timestamps_still_produce_different_hashes():
 # ---------------------------------------------------------------------------
 
 def test_every_audit_event_field_affects_the_hash():
+    """Change the hash when any single audit-event field is mutated."""
     from audit.record_integrity import AUDIT_EVENT_FIELDS
 
     base = _base_audit_event()
@@ -242,6 +257,7 @@ def test_every_audit_event_field_affects_the_hash():
 
 
 def test_every_quarantine_field_affects_the_hash():
+    """Change the hash when any single quarantine-record field is mutated."""
     from audit.record_integrity import QUARANTINE_RECORD_FIELDS
 
     base = _base_quarantine_record()
@@ -263,6 +279,8 @@ def test_every_quarantine_field_affects_the_hash():
 # ---------------------------------------------------------------------------
 
 def test_record_integrity_hash_differs_from_producer_signature_for_equivalent_content():
+    """Produce a record-integrity hash that never collides with the producer's own signature for the
+    same content."""
     from audit.signing import sign_audit_event
 
     record = _base_audit_event()

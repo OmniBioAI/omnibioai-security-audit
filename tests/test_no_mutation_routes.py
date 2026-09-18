@@ -4,11 +4,14 @@ of canonical or quarantine audit evidence. Inspects the real FastAPI
 app's route table directly (not a hand-maintained list of files), so a
 future PR that adds a mutating route anywhere in this service fails
 this test rather than silently reintroducing a mutation path.
+
+Developer: Manish Kumar <manish@omnibioai.org>
 """
 from api.main import app
 
 
 def test_every_route_in_this_service_is_read_only():
+    """Forbid every route in the app from registering PUT, PATCH, or DELETE."""
     mutating_methods = {"PUT", "PATCH", "DELETE"}
     offenders = []
     for route in app.routes:
