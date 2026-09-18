@@ -68,9 +68,9 @@ see `RedisSafetyError` and `_safe_repr_command`.
 from __future__ import annotations
 
 import secrets
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Sequence
-from urllib.parse import urlsplit
+from typing import Self
 
 import redis
 
@@ -238,7 +238,7 @@ def classify_environment(
         if probe is not None:
             try:
                 probe.close()
-            except Exception:  # noqa: BLE001 -- best-effort cleanup only
+            except Exception:  # noqa: S110, BLE001 -- best-effort cleanup only, deliberately silent
                 pass
     if got != attestation.nonce_value:
         raise EnvironmentClassificationError(
@@ -460,7 +460,7 @@ class AuthenticatedSession:
     for exactly what is and is not enforced.
     """
 
-    def __init__(self, *, environment: RedisEnvironment, gate: CommandGate, client: "redis.Redis"):
+    def __init__(self, *, environment: RedisEnvironment, gate: CommandGate, client: redis.Redis):
         self.environment = environment
         self._gate = gate
         self._client = client
@@ -478,10 +478,10 @@ class AuthenticatedSession:
         self._closed = True
         try:
             self._client.close()
-        except Exception:  # noqa: BLE001 -- best-effort cleanup only
+        except Exception:  # noqa: S110, BLE001 -- best-effort cleanup only, deliberately silent
             pass
 
-    def __enter__(self) -> "AuthenticatedSession":
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, exc_type, exc, tb) -> None:
@@ -558,7 +558,7 @@ def authenticate(
         if client is not None:
             client.close()
         raise
-    except Exception as exc:  # noqa: BLE001 -- convert anything unexpected to a safety error, never leak it raw
+    except Exception as exc:  # convert anything unexpected to a safety error, never leak it raw
         if client is not None:
             client.close()
         raise AuthenticationFailedError(

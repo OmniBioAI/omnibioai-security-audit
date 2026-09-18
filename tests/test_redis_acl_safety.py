@@ -32,7 +32,6 @@ import pytest
 import redis
 
 from scripts.redis_acl_safety import (
-    DANGEROUS_COMMANDS,
     PRODUCTION_ALLOWED_COMMANDS,
     PRODUCTION_PORT,
     AuthenticatedSession,
@@ -231,7 +230,7 @@ _DOCKER_AVAILABLE = shutil.which("docker") is not None
 
 
 def _run(cmd, **kw):
-    return subprocess.run(cmd, capture_output=True, text=True, timeout=30, **kw)
+    return subprocess.run(cmd, capture_output=True, text=True, timeout=30, check=False, **kw)
 
 
 @pytest.fixture(scope="session")
