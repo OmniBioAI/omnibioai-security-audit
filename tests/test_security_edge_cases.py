@@ -11,14 +11,44 @@ from pydantic import ValidationError
 
 from api import routes_audit, routes_audit_events
 from audit import signing
+from audit.source_semantics import FreshnessStatus, RetentionStatus, SourceAvailability
 from db.session import get_db
-from schemas.audit import AuditEventListResponse, AuditEventOut
+from schemas.audit import (
+    AuditEventListResponse,
+    AuditEventOut,
+    FreshnessOut,
+    RetentionOut,
+)
+
+
+def _collect_registered_paths(routes) -> set[str]:
+    """Version-robust path collection across FastAPI/Starlette releases.
+
+    Older Starlette flattens every included router's routes directly
+    into `app.routes` as plain `Route`/`APIRoute` objects (`.path`
+    present). Newer Starlette (routing rewrite) instead stores each
+    `include_router()` call as an `_IncludedRouter` wrapper with no
+    `.path` of its own -- the real sub-routes live on
+    `wrapper.original_router.routes`. Handling both shapes here (rather
+    than pinning a Starlette version) keeps this test asserting its
+    actual intent -- that every audit router got registered -- without
+    coupling it to routing-internals that have already changed once."""
+    paths: set[str] = set()
+    for route in routes:
+        path = getattr(route, "path", None)
+        if path is not None:
+            paths.add(path)
+            continue
+        original_router = getattr(route, "original_router", None)
+        if original_router is not None:
+            paths |= _collect_registered_paths(original_router.routes)
+    return paths
 
 
 def test_fastapi_app_registers_both_audit_routers():
     from api.main import app
 
-    paths = {route.path for route in app.routes}
+    paths = _collect_registered_paths(app.routes)
     assert "/health" in paths
     assert "/audit/test" in paths
     assert "/audit/events" in paths
@@ -88,6 +118,8 @@ def test_audit_event_schema_supports_orm_attributes_and_nullable_identity():
         service="auth",
         event_type="login",
         user_id=None,
+        organization_id=None,
+        tenant_scope="unknown",
         action="authenticate",
         resource=None,
         decision=None,
@@ -107,10 +139,28 @@ def test_audit_event_schema_supports_orm_attributes_and_nullable_identity():
 
 
 def test_audit_event_list_response_preserves_pagination_contract():
-    response = AuditEventListResponse(items=[], total=3, page=2, page_size=2, total_pages=2)
+    generated_at = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    source_checked_at = datetime(2026, 1, 1, 0, 0, 1, tzinfo=timezone.utc)
+    response = AuditEventListResponse(
+        items=[], total=3, page=2, page_size=2, total_pages=2,
+        source="security_audit",
+        source_availability=SourceAvailability.AVAILABLE,
+        generated_at=generated_at,
+        source_checked_at=source_checked_at,
+        freshness=FreshnessOut(status=FreshnessStatus.CURRENT),
+        retention=RetentionOut(status=RetentionStatus.KNOWN),
+        warnings=[],
+    )
 
     assert response.model_dump() == {
         "items": [], "total": 3, "page": 2, "page_size": 2, "total_pages": 2,
+        "source": "security_audit",
+        "source_availability": SourceAvailability.AVAILABLE,
+        "generated_at": generated_at,
+        "source_checked_at": source_checked_at,
+        "freshness": {"status": FreshnessStatus.CURRENT, "last_persisted_event_at": None, "ingestion_lag_seconds": None},
+        "retention": {"status": RetentionStatus.KNOWN, "retention_days": None, "oldest_available_event_at": None},
+        "warnings": [],
     }
 
 
@@ -159,8 +209,12 @@ def test_list_audit_events_route_calculates_nonempty_total_pages(monkeypatch):
 
 
 def test_get_db_closes_session_after_normal_iteration(monkeypatch):
+    # get_db() is bound to ReaderSessionLocal (V2-003 reader/writer split,
+    # db/session.py) -- SessionLocal is the writer factory worker/main.py
+    # uses instead, and patching it here would leave get_db() constructing
+    # a real ReaderSessionLocal() session unaffected by this monkeypatch.
     db = MagicMock()
-    monkeypatch.setattr("db.session.SessionLocal", MagicMock(return_value=db))
+    monkeypatch.setattr("db.session.ReaderSessionLocal", MagicMock(return_value=db))
 
     yielded = list(get_db())
 
@@ -170,7 +224,7 @@ def test_get_db_closes_session_after_normal_iteration(monkeypatch):
 
 def test_get_db_closes_session_when_consumer_raises(monkeypatch):
     db = MagicMock()
-    monkeypatch.setattr("db.session.SessionLocal", MagicMock(return_value=db))
+    monkeypatch.setattr("db.session.ReaderSessionLocal", MagicMock(return_value=db))
     generator = get_db()
 
     assert next(generator) is db
