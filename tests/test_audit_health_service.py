@@ -100,6 +100,23 @@ def test_redis_health_missing_xinfo_groups_support_is_not_a_failure(stream_reade
     assert health.consumer_lag_source == "unsupported_redis_version"
 
 
+def test_redis_health_missing_xinfo_consumers_support_is_not_a_failure(stream_reader):
+    """A Redis version/state where XINFO CONSUMERS itself fails (e.g. the
+    consumer group has never had a consumer) must degrade only the
+    consumer-stat fields, not the whole health check."""
+    reader, mock_redis = stream_reader
+    mock_redis.xlen.return_value = 0
+    mock_redis.xpending.return_value = {"pending": 0}
+    mock_redis.xinfo_groups.return_value = [{"name": "audit-workers", "lag": 0}]
+    mock_redis.xinfo_consumers.side_effect = Exception("NOGROUP")
+
+    health = get_redis_pipeline_health(reader)
+
+    assert health.available is True
+    assert health.active_consumer_count is None
+    assert health.least_idle_consumer_ms is None
+
+
 # ---------------------------------------------------------------------------
 # Persistence (MySQL) side
 # ---------------------------------------------------------------------------
@@ -265,6 +282,22 @@ def test_pel_pending_threshold_unconfigured_fires_nothing(stream_reader, db_sess
 
     assert "pel_backlog_threshold_exceeded" not in [c.condition for c in recording_alerts], \
         "must never fabricate a threshold that was never configured"
+
+
+def test_pel_pending_threshold_configured_as_non_integer_fires_nothing(stream_reader, db_session, recording_alerts, monkeypatch):
+    """Treat an unparseable threshold value the same as an unconfigured one -- evaluate nothing,
+    never guess or crash."""
+    monkeypatch.setenv("AUDIT_ALERT_PEL_PENDING_THRESHOLD", "not-a-number")
+    reader, mock_redis = stream_reader
+    mock_redis.xlen.return_value = 100
+    mock_redis.xpending.return_value = {"pending": 99999}
+    mock_redis.xpending_range.return_value = []
+    mock_redis.xinfo_groups.return_value = []
+    mock_redis.xinfo_consumers.return_value = _consumers()
+
+    get_pipeline_health(reader, db_session)
+
+    assert "pel_backlog_threshold_exceeded" not in [c.condition for c in recording_alerts]
 
 
 def test_pel_pending_threshold_configured_and_exceeded_fires_warning(stream_reader, db_session, recording_alerts, monkeypatch):

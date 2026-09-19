@@ -29,6 +29,7 @@ import secrets
 import shutil
 import subprocess
 import time
+from unittest.mock import MagicMock, patch
 
 import pytest
 import redis
@@ -780,3 +781,207 @@ class TestRawClientBypassRealRedis:
         # entire intended public surface -- see the module/class
         # docstrings for the honest limit of this guarantee (no true
         # private attributes exist in Python).
+
+
+# ---------------------------------------------------------------------------
+# Pure unit tests: defensive/plumbing branches not covered by the incident-
+# reproduction tests above -- RedisEnvironment's value-object protocol,
+# DisposableAttestation.generate_nonce, gate construction against an
+# UNKNOWN (not merely unreachable) environment, AuthenticatedSession's
+# context-manager/double-close/best-effort-cleanup behavior, and
+# authenticate()'s own error-shape branches. These are generic Python
+# defensive code, not the AUTH/ACL security semantics the module's
+# docstring says fakeredis can't be trusted for, so a mocked
+# `redis.Redis` is used here deliberately -- it never stands in for a
+# real authorization decision anywhere in this file.
+# ---------------------------------------------------------------------------
+
+
+class TestRedisEnvironmentValueObjectProtocol:
+    """Validate RedisEnvironment's __repr__/__eq__/__hash__, which nothing else in this module's
+    happy paths exercises (those compare with `is`, not `==`)."""
+
+    def test_repr_names_the_instance(self):
+        """Render each RedisEnvironment singleton's repr with its own name."""
+        assert repr(RedisEnvironment.DISPOSABLE) == "RedisEnvironment.DISPOSABLE"
+        assert repr(RedisEnvironment.PRODUCTION) == "RedisEnvironment.PRODUCTION"
+        assert repr(RedisEnvironment.UNKNOWN) == "RedisEnvironment.UNKNOWN"
+
+    def test_equality_is_identity_based(self):
+        """Equate a RedisEnvironment only with itself, never with a different singleton."""
+        assert RedisEnvironment.DISPOSABLE == RedisEnvironment.DISPOSABLE
+        assert RedisEnvironment.DISPOSABLE != RedisEnvironment.PRODUCTION
+        assert RedisEnvironment.DISPOSABLE != "DISPOSABLE"
+
+    def test_hash_is_stable_and_usable_in_a_set(self):
+        """Hash a RedisEnvironment stably enough to use it in a set/dict key."""
+        assert hash(RedisEnvironment.DISPOSABLE) == hash(RedisEnvironment.DISPOSABLE)
+        assert {RedisEnvironment.DISPOSABLE, RedisEnvironment.DISPOSABLE, RedisEnvironment.PRODUCTION} == {
+            RedisEnvironment.DISPOSABLE, RedisEnvironment.PRODUCTION,
+        }
+
+
+def test_generate_nonce_returns_a_fresh_unguessable_value_each_call():
+    """Generate a fresh, differing hex nonce on every call."""
+    a = DisposableAttestation.generate_nonce()
+    b = DisposableAttestation.generate_nonce()
+    assert a != b
+    assert len(a) == 32  # secrets.token_hex(16) -> 32 hex chars
+    int(a, 16)  # must actually be hex
+
+
+def test_safe_repr_command_handles_an_empty_command():
+    """Render '<empty>' instead of raising for a command that normalizes to nothing."""
+    assert _safe_repr_command([]) == "<empty>"
+    assert _safe_repr_command([""]) == "<empty>"
+
+
+class TestGateConstructionAgainstUnknownEnvironment:
+    """DisposableValidator/DisposableNegativeTestGate must refuse construction against UNKNOWN
+    (no attestation supplied), not merely against an unreachable target -- the same fail-closed
+    discipline classify_environment itself documents."""
+
+    def test_disposable_validator_rejects_missing_attestation(self):
+        """Refuse to construct a DisposableValidator with no attestation at all."""
+        with pytest.raises(EnvironmentClassificationError):
+            DisposableValidator(host="127.0.0.1", port=16399, attestation=None)
+
+    def test_negative_test_gate_rejects_missing_attestation(self):
+        """Refuse to construct a DisposableNegativeTestGate with no attestation at all."""
+        with pytest.raises(EnvironmentClassificationError):
+            DisposableNegativeTestGate(host="127.0.0.1", port=16399, attestation=None)
+
+
+class TestClassifyEnvironmentProbeCleanup:
+    """classify_environment's own best-effort probe.close() must never let a cleanup failure mask
+    (or crash out of) an otherwise-successful classification."""
+
+    def test_probe_close_failure_does_not_prevent_a_disposable_result(self):
+        """Still classify DISPOSABLE even when the verification probe's own close() raises."""
+        attestation = DisposableAttestation(host="127.0.0.1", port=16399, nonce_key="k", nonce_value="v")
+        mock_probe = MagicMock()
+        mock_probe.execute_command.return_value = "v"
+        mock_probe.close.side_effect = RuntimeError("cleanup failed")
+        with patch("scripts.redis_acl_safety.redis.Redis", return_value=mock_probe):
+            env = classify_environment(host="127.0.0.1", port=16399, attestation=attestation)
+        assert env is RedisEnvironment.DISPOSABLE
+
+
+class TestAuthenticatedSessionLifecycleWithMockedClient:
+    """AuthenticatedSession's close()/context-manager plumbing, exercised against a mocked
+    underlying client -- this class's own logic, not Redis's AUTH/ACL semantics."""
+
+    def _session(self, client=None):
+        return AuthenticatedSession(
+            environment=RedisEnvironment.DISPOSABLE, gate=ProductionValidator(),
+            client=client or MagicMock(),
+        )
+
+    def test_double_close_is_a_safe_no_op(self):
+        """Close a session twice without error, closing the underlying client only once."""
+        mock_client = MagicMock()
+        session = self._session(mock_client)
+        session.close()
+        session.close()
+        mock_client.close.assert_called_once()
+
+    def test_close_swallows_a_failure_from_the_underlying_client(self):
+        """Swallow (not raise) an exception from the underlying client's own close()."""
+        mock_client = MagicMock()
+        mock_client.close.side_effect = RuntimeError("boom")
+        session = self._session(mock_client)
+        session.close()  # must not raise
+        assert session._closed is True
+
+    def test_context_manager_closes_on_exit(self):
+        """Close the underlying client on context-manager exit."""
+        mock_client = MagicMock()
+        with self._session(mock_client) as session:
+            assert session.environment is RedisEnvironment.DISPOSABLE
+        mock_client.close.assert_called_once()
+
+
+class TestAuthenticateErrorShapesWithMockedClient:
+    """authenticate()'s own error-conversion branches that the real-Redis incident-reproduction
+    tests above don't reach: an unexpected (non-True/"OK") AUTH result, ACL WHOAMI itself failing
+    after a successful AUTH, and a completely unexpected (non-RedisError) exception. None of these
+    depend on fakeredis's known AUTH/ACL gap -- they're this function's own control flow."""
+
+    def test_unexpected_auth_result_is_a_hard_failure(self):
+        """Raise AuthenticationFailedError when AUTH succeeds on the wire but returns neither True
+        nor 'OK'."""
+        mock_client = MagicMock()
+        mock_client.execute_command.return_value = "MAYBE"
+        with (
+            patch("scripts.redis_acl_safety.redis.Redis", return_value=mock_client),
+            pytest.raises(AuthenticationFailedError),
+        ):
+            authenticate(
+                host="127.0.0.1", port=16399, username="u", password="p",
+                expected_identity="u", gate=ProductionValidator(),
+                environment=RedisEnvironment.UNKNOWN,
+            )
+        mock_client.close.assert_called_once()
+
+    def test_acl_whoami_failure_after_successful_auth_is_identity_mismatch(self):
+        """Raise IdentityMismatchError when ACL WHOAMI itself fails (e.g. NOPERM) even though AUTH
+        already succeeded."""
+        mock_client = MagicMock()
+        mock_client.execute_command.side_effect = [True, redis.RedisError("NOPERM")]
+        with (
+            patch("scripts.redis_acl_safety.redis.Redis", return_value=mock_client),
+            pytest.raises(IdentityMismatchError),
+        ):
+            authenticate(
+                host="127.0.0.1", port=16399, username="u", password="p",
+                expected_identity="u", gate=ProductionValidator(),
+                environment=RedisEnvironment.UNKNOWN,
+            )
+        mock_client.close.assert_called_once()
+
+    def test_wrong_identity_after_successful_auth_is_identity_mismatch(self):
+        """Raise IdentityMismatchError when ACL WHOAMI answers with a different identity than
+        expected."""
+        mock_client = MagicMock()
+        mock_client.execute_command.side_effect = [True, "someone_else"]
+        with (
+            patch("scripts.redis_acl_safety.redis.Redis", return_value=mock_client),
+            pytest.raises(IdentityMismatchError),
+        ):
+            authenticate(
+                host="127.0.0.1", port=16399, username="u", password="p",
+                expected_identity="u", gate=ProductionValidator(),
+                environment=RedisEnvironment.UNKNOWN,
+            )
+
+    def test_completely_unexpected_exception_is_converted_not_leaked_raw(self):
+        """Convert a totally unexpected exception (not a redis.RedisError) into
+        AuthenticationFailedError, never let it escape raw -- and still close whatever connection
+        was opened."""
+        mock_client = MagicMock()
+        mock_client.execute_command.side_effect = TypeError("something structurally unexpected")
+        with (
+            patch("scripts.redis_acl_safety.redis.Redis", return_value=mock_client),
+            pytest.raises(AuthenticationFailedError),
+        ):
+            authenticate(
+                host="127.0.0.1", port=16399, username="u", password="p",
+                expected_identity="u", gate=ProductionValidator(),
+                environment=RedisEnvironment.UNKNOWN,
+            )
+        mock_client.close.assert_called_once()
+
+    def test_authenticate_production_delegates_into_authenticate(self):
+        """Prove authenticate_production actually calls through to authenticate() (not just
+        validates the port) by observing a mocked AUTH failure propagate as
+        AuthenticationFailedError."""
+        mock_client = MagicMock()
+        mock_client.execute_command.side_effect = redis.AuthenticationError("bad password")
+        with (
+            patch("scripts.redis_acl_safety.redis.Redis", return_value=mock_client),
+            pytest.raises(AuthenticationFailedError),
+        ):
+            authenticate_production(
+                host="127.0.0.1", port=PRODUCTION_PORT, username="u", password="p",
+                expected_identity="u",
+            )
