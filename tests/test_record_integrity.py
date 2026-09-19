@@ -278,6 +278,50 @@ def test_every_quarantine_field_affects_the_hash():
 # this codebase, even though they may share the same underlying secret.
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Defensive branches: a context value that looks like a string but isn't
+# actually JSON, and the fail-closed `except Exception` wrapper in both
+# verify_*_hash functions (triggered via a record whose value can't be
+# formatted into the canonical message at all).
+# ---------------------------------------------------------------------------
+
+def test_context_as_a_non_json_string_is_hashed_as_the_literal_string():
+    """A context value that is a string but not valid JSON falls through
+    _canonical_json's except branch and is hashed as-is, rather than raising."""
+    record = _base_audit_event(context="not valid json {")
+    record_hash = compute_audit_event_hash(record, SECRET)
+    # Hashing must succeed and be stable/deterministic for the same input.
+    assert record_hash == compute_audit_event_hash(_base_audit_event(context="not valid json {"), SECRET)
+    # And must differ from the same field hashed as an empty context.
+    assert record_hash != compute_audit_event_hash(_base_audit_event(context="{}"), SECRET)
+
+
+class _RaisesOnFormat:
+    """A value whose __format__ raises -- used to force compute_*_hash to
+    raise inside _canonical_message's f-string formatting, so
+    verify_*_hash's fail-closed `except Exception` branch is exercised."""
+
+    def __format__(self, format_spec):
+        raise RuntimeError("boom")
+
+    def __str__(self):
+        raise RuntimeError("boom")
+
+
+def test_verify_audit_event_hash_fails_closed_when_computing_the_hash_raises():
+    """Return False, not raise, when compute_audit_event_hash itself raises."""
+    record = _base_audit_event(action=_RaisesOnFormat())
+    record["record_integrity_hash"] = "irrelevant"
+    assert verify_audit_event_hash(record, SECRET) is False
+
+
+def test_verify_quarantine_record_hash_fails_closed_when_computing_the_hash_raises():
+    """Return False, not raise, when compute_quarantine_record_hash itself raises."""
+    record = _base_quarantine_record(failure_category=_RaisesOnFormat())
+    record["record_integrity_hash"] = "irrelevant"
+    assert verify_quarantine_record_hash(record, SECRET) is False
+
+
 def test_record_integrity_hash_differs_from_producer_signature_for_equivalent_content():
     """Produce a record-integrity hash that never collides with the producer's own signature for the
     same content."""
