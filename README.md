@@ -152,6 +152,30 @@ persistence, stream processing, and worker recovery. Run:
 pytest -q
 ```
 
+The canonical coverage gate is production-source statement coverage:
+
+```bash
+pytest --cov --cov-report=term-missing --cov-report=json
+```
+
+Coverage is configured in `.coveragerc` to measure application and operational
+Python source: `api`, `audit`, `consumers`, `db`, `schemas`, `scripts`,
+`services`, `worker`, and `alembic`. Alembic migrations are included because
+they are shipped operational source. Tests are intentionally excluded from the
+coverage denominator; report test execution counts separately as passed,
+failed, and skipped.
+
+The coverage gate is statement coverage only, with branch coverage disabled.
+It does not imply live-backend integration verification, operational
+verification, or 100% coverage. Historical whole-repository measurements such
+as `pytest --cov=.` reported a lower number because the denominator included
+`tests/`, including opt-in live Redis/MySQL integration test bodies that are
+collected but skipped when isolated backends are not configured.
+
+Live-backend integration tests are opt-in and must be reported separately from
+the coverage percentage. They must only run against explicitly configured,
+isolated test Redis/MySQL endpoints, never production Redis or MySQL.
+
 ## Current implementation status
 
 SAT-1 and SAT-3/SAT-4 are merged in the current main architecture: the tenant

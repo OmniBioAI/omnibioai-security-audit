@@ -1,0 +1,14 @@
+[run]
+source =
+    api
+    audit
+    consumers
+    db
+    schemas
+    scripts
+    services
+    worker
+    alembic
+
+[report]
+fail_under = 98
