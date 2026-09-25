@@ -35,6 +35,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from audit.record_integrity import (
+    audit_event_hash_matches_legacy_utc_form,
     verify_audit_event_hash,
     verify_quarantine_record_hash,
 )
@@ -110,6 +111,8 @@ def verify_audit_events(session, secret: str) -> dict:
         record = row
         if verify_audit_event_hash(record, secret):
             stats["valid"] += 1
+            if audit_event_hash_matches_legacy_utc_form(record, secret):
+                stats["valid_legacy_tz"] = stats.get("valid_legacy_tz", 0) + 1
         else:
             stats["invalid"].append(row["event_id"])
     return stats
@@ -149,6 +152,8 @@ def _report(name: str, stats: dict) -> bool:
     """Returns True if this table's verification found no problems."""
     print(f"[INFO] {name}: {stats['checked']} record(s) checked")
     print(f"[INFO] {name}: {stats['valid']} valid, {stats['no_baseline']} no-baseline (pre-dates this feature)")
+    if stats.get("valid_legacy_tz"):
+        print(f"[INFO] {name}: {stats['valid_legacy_tz']} of the valid record(s) matched the legacy '+00:00' timestamp form")
     ok = True
     if stats["invalid"]:
         ok = False

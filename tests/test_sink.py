@@ -141,3 +141,32 @@ def test_sink_write_omitted_status_defaults_to_unsigned(db_session):
 
     fetched = db_session.get(AuditEventRecord, "evt-1")
     assert fetched.integrity_status == "unsigned"
+
+
+def test_sink_stores_aware_timestamp_as_naive_utc_and_the_stored_row_verifies(db_session, monkeypatch):
+    """2026-09-24 live finding: rows written from aware producer timestamps
+    failed integrity verification on read-back. Sink must hash and store
+    the same naive-UTC value, including for a non-UTC offset."""
+    from datetime import timedelta
+
+    from audit.config import AuditConfig
+    from audit.record_integrity import verify_audit_event_hash
+
+    monkeypatch.setattr(AuditConfig, "EVENT_SIGNING_SECRET", "sink-tz-test-secret")
+    chicago = timezone(timedelta(hours=-5))
+    Sink(db_session).write(_event(event_id="evt-tz", timestamp=datetime(2026, 1, 1, 7, 0, 0, 600000, tzinfo=chicago)))
+
+    fetched = db_session.get(AuditEventRecord, "evt-tz")
+    assert fetched.timestamp.replace(microsecond=0) in (
+        datetime(2026, 1, 1, 12, 0, 0),  # noqa: DTZ001 -- backend kept microseconds (SQLite)
+        datetime(2026, 1, 1, 12, 0, 1),  # noqa: DTZ001 -- backend rounded (MySQL DATETIME)
+    )
+    assert fetched.timestamp.tzinfo is None
+
+    columns = (
+        "event_id", "timestamp", "service", "event_type", "user_id", "organization_id",
+        "tenant_scope", "action", "resource", "decision", "reason", "trace_id", "context",
+        "integrity_status", "record_integrity_hash",
+    )
+    row = {col: getattr(fetched, col) for col in columns}
+    assert verify_audit_event_hash(row, "sink-tz-test-secret") is True

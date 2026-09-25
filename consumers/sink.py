@@ -1,7 +1,7 @@
 from sqlalchemy.exc import IntegrityError
 
 from audit.config import AuditConfig
-from audit.record_integrity import compute_audit_event_hash
+from audit.record_integrity import compute_audit_event_hash, to_naive_utc
 from db.models import AuditEventRecord
 
 
@@ -25,6 +25,10 @@ class Sink:
         propagates uncaught so the worker knows NOT to ack and can retry.
         """
         integrity_status = event.get("integrity_status", "unsigned")
+        # Hash and store the same naive-UTC value. The driver drops
+        # tzinfo without converting, so an aware non-UTC timestamp would
+        # otherwise be persisted as the wrong wall-clock time.
+        timestamp = to_naive_utc(event["timestamp"])
         # V2-003: computed once, here, at insert time, by the one
         # trusted writer -- see audit/record_integrity.py's module
         # docstring for why this is a separate mechanism from producer
@@ -32,7 +36,7 @@ class Sink:
         record_integrity_hash = compute_audit_event_hash(
             {
                 "event_id": event["event_id"],
-                "timestamp": event["timestamp"],
+                "timestamp": timestamp,
                 "service": event["service"],
                 "event_type": event["event_type"],
                 "user_id": event.get("user_id"),
@@ -50,7 +54,7 @@ class Sink:
         )
         record = AuditEventRecord(
             event_id=event["event_id"],
-            timestamp=event["timestamp"],
+            timestamp=timestamp,
             service=event["service"],
             event_type=event["event_type"],
             user_id=event.get("user_id"),
