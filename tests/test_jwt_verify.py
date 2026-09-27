@@ -15,6 +15,7 @@ import pytest
 from cryptography.hazmat.primitives.asymmetric import rsa
 from jwt import PyJWKClient
 from jwt.algorithms import RSAAlgorithm
+from redis.exceptions import AuthenticationError, ResponseError
 
 from audit import jwt_verify as jwt_verify_module
 from audit.jwt_verify import TokenInvalid, verify_token
@@ -209,17 +210,24 @@ def test_token_without_jti_skips_blacklist_check(mock_blacklist):
     mock_blacklist.exists.assert_not_called()
 
 
-def test_blacklist_redis_error_fails_open(monkeypatch):
-    """Matches omnibioai-auth/app/core/token_revocation.py's own
-    documented tradeoff: a Redis outage must not 401 every request in
-    this service either."""
+def test_blacklist_redis_error_fails_closed(monkeypatch):
+    """A Redis outage must never make a revoked token usable."""
     mock = MagicMock()
     mock.exists.side_effect = Exception("redis down")
     monkeypatch.setattr(jwt_verify_module, "_blacklist", mock)
 
     token = _token(sub="1", jti="some-jti")
-    payload = verify_token(token)  # must not raise
-    assert payload["sub"] == "1"
+    with pytest.raises(TokenInvalid, match="revocation state unavailable"):
+        verify_token(token)
+
+
+def test_blacklist_authentication_and_acl_errors_fail_closed(monkeypatch):
+    mock = MagicMock()
+    monkeypatch.setattr(jwt_verify_module, "_blacklist", mock)
+    for redis_error in (AuthenticationError("wrongpass"), ResponseError("NOPERM")):
+        mock.exists.side_effect = redis_error
+        with pytest.raises(TokenInvalid, match="revocation state unavailable"):
+            verify_token(_token(sub="1", jti="security-state"))
 
 
 # ---------------------------------------------------------------------------

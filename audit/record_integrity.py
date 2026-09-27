@@ -29,9 +29,22 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
-from datetime import timedelta
+from datetime import timedelta, timezone
 
 _DOMAIN_LABEL = "omnibioai-audit-record-integrity"
+
+
+def to_naive_utc(value):
+    """Normalize a datetime to the naive-UTC form a MySQL DATETIME column
+    stores and returns. A timezone-aware value (every producer that
+    sends an ISO-8601 string with "Z"/"+00:00" -- gateway, rag, tes,
+    lims -- arrives aware after pydantic parsing) is converted to UTC and
+    stripped of tzinfo; a naive value is assumed to already be UTC
+    (AuditEvent's own default is datetime.utcnow()). Anything else is
+    returned unchanged."""
+    if hasattr(value, "tzinfo") and value.tzinfo is not None and hasattr(value, "astimezone"):
+        return value.astimezone(timezone.utc).replace(tzinfo=None)
+    return value
 
 
 def _integrity_key(secret: str) -> bytes:
@@ -80,13 +93,22 @@ QUARANTINE_RECORD_FIELDS = (
 )
 
 
-def _canonical_message(record: dict, fields: tuple[str, ...]) -> bytes:
+def _canonical_message(record: dict, fields: tuple[str, ...], *, legacy_utc_suffix: bool = False) -> bytes:
     parts = []
     for field in fields:
         value = record.get(field)
         if field == "context":
             value = _canonical_json(value if value is not None else {})
         elif field == "timestamp" and value is not None and hasattr(value, "isoformat"):
+            # A timezone-aware write-time value and the naive value MySQL
+            # hands back on read are the same instant but different
+            # isoformat() strings ("...+00:00" vs no suffix). Before this
+            # normalization, every row from a producer sending an aware
+            # ISO-8601 timestamp failed verification -- 2,856 of 3,070
+            # hashed production rows as of 2026-09-24 -- which made the
+            # tamper signal useless. legacy_utc_suffix reproduces the old
+            # "+00:00" form so rows hashed before this fix still verify.
+            value = to_naive_utc(value)
             # audit_events.timestamp is a plain MySQL DATETIME column --
             # no fractional-second precision. A Python datetime with
             # microseconds (e.g. datetime.now()) has its fractional part
@@ -108,6 +130,8 @@ def _canonical_message(record: dict, fields: tuple[str, ...]) -> bytes:
             value = value.replace(microsecond=0)
             if microsecond >= 500_000:
                 value = value + timedelta(seconds=1)
+            if legacy_utc_suffix:
+                value = value.replace(tzinfo=timezone.utc)
             value = value.isoformat()
         parts.append(f"{field}={value!s}")
     return "\n".join(parts).encode()
@@ -138,7 +162,31 @@ def verify_audit_event_hash(record: dict, secret: str) -> bool:
         expected = compute_audit_event_hash(record, secret)
     except Exception:  # noqa: BLE001 -- a malformed record fails verification, it does not crash the verifier
         return False
-    return hmac.compare_digest(stored, expected)
+    if hmac.compare_digest(stored, expected):
+        return True
+    return audit_event_hash_matches_legacy_utc_form(record, secret)
+
+
+def audit_event_hash_matches_legacy_utc_form(record: dict, secret: str) -> bool:
+    """True if the stored hash matches the pre-2026-09-24 canonical form,
+    where an aware UTC write-time timestamp was hashed with a "+00:00"
+    suffix. Same key, same fields, same instant -- only the string
+    representation of the timestamp differs, so accepting it does not
+    weaken tamper detection: any changed field still breaks the HMAC.
+    Exposed separately so the verifier can report how many rows rely on
+    it. Never raises."""
+    stored = record.get("record_integrity_hash")
+    if not stored:
+        return False
+    try:
+        mac = hmac.new(
+            _integrity_key(secret),
+            _canonical_message(record, AUDIT_EVENT_FIELDS, legacy_utc_suffix=True),
+            hashlib.sha256,
+        )
+    except Exception:  # noqa: BLE001 -- same as verify_audit_event_hash
+        return False
+    return hmac.compare_digest(stored, mac.hexdigest())
 
 
 def verify_quarantine_record_hash(record: dict, secret: str) -> bool:

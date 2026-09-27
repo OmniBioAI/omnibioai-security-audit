@@ -7,6 +7,7 @@ audit ingestion must survive API restarts/deploys, the consumer workload
 scales independently of API request volume, and API request latency must
 never depend on a database write happening on the ingestion side.
 """
+import os
 import sys
 import time
 
@@ -283,7 +284,26 @@ def run(max_iterations=None):
         iterations += 1
 
 
+def _require_real_signing_secret() -> None:
+    """Refuse to run the production consumer on the public "change-me"
+    fallback (audit/config.py). A worker without the platform JWT_SECRET
+    classifies producer signatures and computes record_integrity_hash
+    with a publicly known key: on 2026-09-17, 210 rows written that way
+    reached the production omnibioai_audit ledger, where the append-only
+    triggers now keep them permanently unverifiable."""
+    secret = os.environ.get("JWT_SECRET", "")
+    if not secret or secret == "change-me":
+        print(
+            "[WORKER] FATAL: JWT_SECRET is unset or the 'change-me' default -- "
+            "refusing to consume audit events with a publicly known signing key",
+            file=sys.stderr,
+            flush=True,
+        )
+        sys.exit(2)
+
+
 if __name__ == "__main__":
+    _require_real_signing_secret()
     print(
         f"[WORKER] starting audit consumer "
         f"(group={AuditConfig.CONSUMER_GROUP}, "

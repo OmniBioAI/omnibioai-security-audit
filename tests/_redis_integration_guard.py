@@ -44,6 +44,7 @@ import pytest
 
 ENV_VAR = "B0_TEST_REDIS_URL"
 FORBIDDEN_PORT = 6380
+FORBIDDEN_HOSTS = {"redis", "omnibioai-studio-redis-1"}
 
 
 class MissingTestRedisEndpoint(RuntimeError):
@@ -54,6 +55,10 @@ class ProductionRedisEndpointRejected(RuntimeError):
     """B0_TEST_REDIS_URL resolves to this architecture's shared,
     production-adjacent Redis port -- refused unconditionally, before any
     connection is opened."""
+
+
+class MissingTestRedisAttestation(RuntimeError):
+    """The test endpoint lacks explicit isolation attestation."""
 
 
 def validate_test_redis_url(url_str: str | None, env_var: str = ENV_VAR) -> str:
@@ -70,7 +75,12 @@ def validate_test_redis_url(url_str: str | None, env_var: str = ENV_VAR) -> str:
             "an explicit, isolated test Redis endpoint and never fall back "
             "to a default"
         )
-    port = urlsplit(url_str).port or FORBIDDEN_PORT
+    parsed = urlsplit(url_str)
+    if (parsed.hostname or "").lower() in FORBIDDEN_HOSTS:
+        raise ProductionRedisEndpointRejected(
+            f"{env_var} resolves to the production Redis service hostname -- refusing it"
+        )
+    port = parsed.port or FORBIDDEN_PORT
     if port == FORBIDDEN_PORT:
         raise ProductionRedisEndpointRejected(
             f"{env_var} resolves to port {FORBIDDEN_PORT}, which is this "
@@ -80,6 +90,21 @@ def validate_test_redis_url(url_str: str | None, env_var: str = ENV_VAR) -> str:
             "different port instead. There is no override for this check."
         )
     return url_str
+
+
+def validate_test_redis_isolation(
+    url_str: str | None, env_var: str = ENV_VAR, *, attested: str | None,
+    database: str | None, key_prefix: str | None,
+) -> str:
+    url = validate_test_redis_url(url_str, env_var)
+    if (
+        attested != "1" or database is None or not database.isdigit()
+        or not key_prefix or key_prefix.lower() in {"production", "prod"}
+    ):
+        raise MissingTestRedisAttestation(
+            f"{env_var} requires attested isolated database and key prefix"
+        )
+    return url
 
 
 def required_test_redis_url(env_var: str = ENV_VAR) -> str | None:
@@ -92,9 +117,17 @@ def required_test_redis_url(env_var: str = ENV_VAR) -> str | None:
     import os
 
     try:
-        return validate_test_redis_url(os.environ.get(env_var), env_var)
+        base = env_var.removesuffix("_URL")
+        return validate_test_redis_isolation(
+            os.environ.get(env_var), env_var,
+            attested=os.environ.get(f"{base}_ISOLATION_ATTESTED"),
+            database=os.environ.get(f"{base}_DB"),
+            key_prefix=os.environ.get(f"{base}_KEY_PREFIX"),
+        )
     except MissingTestRedisEndpoint as exc:
         pytest.skip(str(exc))
     except ProductionRedisEndpointRejected as exc:
         pytest.fail(str(exc))
+    except MissingTestRedisAttestation as exc:
+        pytest.skip(str(exc))
     return None  # pragma: no cover -- pytest.skip/fail always raise

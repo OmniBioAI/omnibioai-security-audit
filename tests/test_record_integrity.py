@@ -31,11 +31,16 @@ own first version of the relevant unit tests -- see below):
 
 Developer: Manish Kumar <manish@omnibioai.org>
 """
-from datetime import datetime
+import hashlib
+import hmac
+import json
+from datetime import datetime, timedelta, timezone
 
 from audit.record_integrity import (
+    audit_event_hash_matches_legacy_utc_form,
     compute_audit_event_hash,
     compute_quarantine_record_hash,
+    to_naive_utc,
     verify_audit_event_hash,
     verify_quarantine_record_hash,
 )
@@ -219,6 +224,117 @@ def test_a_hash_computed_from_a_microsecond_precision_datetime_verifies_against_
     read_time = _base_audit_event(timestamp=datetime(2026, 9, 16, 12, 0, 1, 0))  # noqa: DTZ001 -- MySQL rounded up to this
     read_time["record_integrity_hash"] = stored_hash
     assert verify_audit_event_hash(read_time, SECRET) is True
+
+
+# ---------------------------------------------------------------------------
+# Timezone-aware write-time timestamps (found 2026-09-24 against the live
+# ledger: 2,856 of 3,070 hashed rows failed verification). Producers send
+# ISO-8601 strings with "Z"/"+00:00", pydantic parses them to aware
+# datetimes, and the hash covered "...+00:00" while MySQL's DATETIME
+# returns the same instant naive on read.
+# ---------------------------------------------------------------------------
+
+def _pre_fix_audit_event_hash(record: dict, secret: str) -> str:
+    """Independent re-implementation of the pre-2026-09-24 canonical form
+    for an aware UTC timestamp: round, keep tzinfo, isoformat. Written out
+    here rather than calling the module's legacy helper, so the test does
+    not just confirm the code against itself."""
+    ts = record["timestamp"]
+    micro = ts.microsecond
+    ts = ts.replace(microsecond=0) + (timedelta(seconds=1) if micro >= 500_000 else timedelta(0))
+    fields = (
+        "event_id", "timestamp", "service", "event_type", "user_id",
+        "organization_id", "tenant_scope", "action", "resource", "decision",
+        "reason", "trace_id", "context", "integrity_status",
+    )
+    parts = []
+    for field in fields:
+        value = record.get(field)
+        if field == "context":
+            value = json.dumps(value or {}, sort_keys=True, default=str, separators=(",", ":"))
+        elif field == "timestamp":
+            value = ts.isoformat()
+        parts.append(f"{field}={value!s}")
+    key = hashlib.sha256(f"omnibioai-audit-record-integrity:{secret}".encode()).digest()
+    return hmac.new(key, "\n".join(parts).encode(), hashlib.sha256).hexdigest()
+
+
+def test_aware_utc_write_time_timestamp_verifies_against_naive_stored_value():
+    """The live bug: hash computed from an aware UTC value at insert time
+    must verify against the naive value MySQL returns on read."""
+    write_time = _base_audit_event(timestamp=datetime(2026, 9, 16, 12, 0, 0, 700000, tzinfo=timezone.utc))
+    stored_hash = compute_audit_event_hash(write_time, SECRET)
+
+    read_time = _base_audit_event(timestamp=datetime(2026, 9, 16, 12, 0, 1))  # noqa: DTZ001 -- naive, as MySQL returns it
+    read_time["record_integrity_hash"] = stored_hash
+    assert verify_audit_event_hash(read_time, SECRET) is True
+
+
+def test_aware_non_utc_write_time_timestamp_verifies_against_utc_stored_value():
+    """A non-UTC offset is the same instant; Sink stores it as naive UTC,
+    so the hash must canonicalize it to UTC too."""
+    chicago = timezone(timedelta(hours=-5))
+    write_time = _base_audit_event(timestamp=datetime(2026, 9, 16, 7, 0, 0, tzinfo=chicago))
+    stored_hash = compute_audit_event_hash(write_time, SECRET)
+
+    read_time = _base_audit_event(timestamp=datetime(2026, 9, 16, 12, 0, 0))  # noqa: DTZ001 -- naive UTC
+    read_time["record_integrity_hash"] = stored_hash
+    assert verify_audit_event_hash(read_time, SECRET) is True
+
+
+def test_row_hashed_with_the_pre_fix_utc_suffix_form_still_verifies():
+    """Rows already in the ledger were hashed with a "+00:00" suffix; the
+    append-only triggers mean they can never be re-hashed, so verification
+    must accept that form for the same instant."""
+    write_time = _base_audit_event(timestamp=datetime(2026, 9, 16, 12, 0, 0, 200000, tzinfo=timezone.utc))
+    legacy_hash = _pre_fix_audit_event_hash(write_time, SECRET)
+
+    read_time = _base_audit_event(timestamp=datetime(2026, 9, 16, 12, 0, 0))  # noqa: DTZ001 -- naive, as stored
+    read_time["record_integrity_hash"] = legacy_hash
+    assert verify_audit_event_hash(read_time, SECRET) is True
+    assert audit_event_hash_matches_legacy_utc_form(read_time, SECRET) is True
+
+
+def test_legacy_form_fallback_still_detects_a_changed_field():
+    """Accepting the legacy timestamp representation must not weaken
+    tamper detection for any other field."""
+    write_time = _base_audit_event(timestamp=datetime(2026, 9, 16, 12, 0, 0, tzinfo=timezone.utc))
+    legacy_hash = _pre_fix_audit_event_hash(write_time, SECRET)
+
+    tampered = _base_audit_event(timestamp=datetime(2026, 9, 16, 12, 0, 0), decision="allow")  # noqa: DTZ001
+    tampered["record_integrity_hash"] = legacy_hash
+    assert verify_audit_event_hash(tampered, SECRET) is False
+    assert audit_event_hash_matches_legacy_utc_form(tampered, SECRET) is False
+
+
+def test_legacy_form_fallback_still_rejects_the_wrong_secret():
+    """A row hashed under a different key (e.g. the public "change-me"
+    fallback) must fail under both canonical forms."""
+    write_time = _base_audit_event(timestamp=datetime(2026, 9, 16, 12, 0, 0, tzinfo=timezone.utc))
+    foreign_hash = _pre_fix_audit_event_hash(write_time, "change-me")
+
+    read_time = _base_audit_event(timestamp=datetime(2026, 9, 16, 12, 0, 0))  # noqa: DTZ001
+    read_time["record_integrity_hash"] = foreign_hash
+    assert verify_audit_event_hash(read_time, SECRET) is False
+
+
+def test_new_rows_do_not_rely_on_the_legacy_form():
+    """A hash computed by the current code verifies on the primary form,
+    so the legacy count in the verifier only ever reflects old rows."""
+    write_time = _base_audit_event(timestamp=datetime(2026, 9, 16, 12, 0, 0, tzinfo=timezone.utc))
+    read_time = _base_audit_event(timestamp=datetime(2026, 9, 16, 12, 0, 0))  # noqa: DTZ001
+    read_time["record_integrity_hash"] = compute_audit_event_hash(write_time, SECRET)
+    assert verify_audit_event_hash(read_time, SECRET) is True
+    assert audit_event_hash_matches_legacy_utc_form(read_time, SECRET) is False
+
+
+def test_to_naive_utc_converts_aware_and_passes_through_naive():
+    """Normalization helper shared by Sink and the canonical form."""
+    naive = datetime(2026, 9, 16, 12, 0, 0)  # noqa: DTZ001
+    assert to_naive_utc(naive) is naive
+    assert to_naive_utc(datetime(2026, 9, 16, 7, 0, 0, tzinfo=timezone(timedelta(hours=-5)))) == naive
+    assert to_naive_utc(None) is None
+    assert to_naive_utc("2026-09-16T12:00:00") == "2026-09-16T12:00:00"
 
 
 def test_different_whole_second_timestamps_still_produce_different_hashes():

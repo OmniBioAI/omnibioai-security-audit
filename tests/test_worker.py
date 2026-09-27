@@ -296,8 +296,9 @@ def test_run_does_not_swallow_keyboard_interrupt():
 # that moment, which is exactly what's patched here.
 # ---------------------------------------------------------------------------
 
-def test_dunder_main_starts_worker_and_exits_cleanly_on_keyboard_interrupt(capsys):
+def test_dunder_main_starts_worker_and_exits_cleanly_on_keyboard_interrupt(capsys, monkeypatch):
     """Print the startup message and exit with status 0 on a keyboard interrupt."""
+    monkeypatch.setenv("JWT_SECRET", "synthetic-dunder-main-secret")
     mock_reader = MagicMock()
     mock_reader.ensure_group.side_effect = KeyboardInterrupt
 
@@ -464,3 +465,23 @@ def test_db_failure_still_does_not_ack_unchanged_behavior():
 
     assert result is False
     reader.ack.assert_not_called()
+
+
+def test_worker_entrypoint_refuses_unset_or_default_signing_secret(monkeypatch):
+    """2026-09-17: a consumer running on the public "change-me" fallback
+    wrote 210 permanently unverifiable rows into the production ledger."""
+    import pytest
+
+    from worker import main as worker_main
+
+    for value in (None, "", "change-me"):
+        if value is None:
+            monkeypatch.delenv("JWT_SECRET", raising=False)
+        else:
+            monkeypatch.setenv("JWT_SECRET", value)
+        with pytest.raises(SystemExit) as excinfo:
+            worker_main._require_real_signing_secret()
+        assert excinfo.value.code == 2
+
+    monkeypatch.setenv("JWT_SECRET", "a-real-deployment-secret")
+    worker_main._require_real_signing_secret()  # does not exit
