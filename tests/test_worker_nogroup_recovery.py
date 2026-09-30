@@ -52,10 +52,10 @@ def _reset_recreate_ratelimit_and_alert_dedup():
     each other."""
     from audit.security_alerts import _reset_dedup_state_for_tests
 
-    worker._last_nogroup_recreate_attempt = 0.0
+    worker._last_nogroup_recreate_attempt = None
     _reset_dedup_state_for_tests()
     yield
-    worker._last_nogroup_recreate_attempt = 0.0
+    worker._last_nogroup_recreate_attempt = None
     _reset_dedup_state_for_tests()
 
 

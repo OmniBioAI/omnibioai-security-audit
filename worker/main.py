@@ -21,7 +21,7 @@ from consumers.sink import Sink
 from consumers.stream_reader import StreamReader
 from db.session import SessionLocal
 
-_last_nogroup_recreate_attempt = 0.0  # module-level: rate-limits the recreate attempt itself
+_last_nogroup_recreate_attempt: float | None = None  # no attempt yet; rate-limits recreate attempts
 
 
 def _is_nogroup_error(e: Exception) -> bool:
@@ -61,7 +61,11 @@ def _handle_nogroup(reader: StreamReader, e: Exception, context: str) -> None:
 
     global _last_nogroup_recreate_attempt
     now = time.monotonic()
-    if now - _last_nogroup_recreate_attempt < AuditConfig.WORKER_NOGROUP_RETRY_BACKOFF_SECONDS:
+    if (
+        _last_nogroup_recreate_attempt is not None
+        and now - _last_nogroup_recreate_attempt
+        < AuditConfig.WORKER_NOGROUP_RETRY_BACKOFF_SECONDS
+    ):
         return  # bounded: do not attempt XGROUP CREATE on every single failed read
     _last_nogroup_recreate_attempt = now
 
