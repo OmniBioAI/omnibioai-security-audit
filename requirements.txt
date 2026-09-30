@@ -5,4 +5,5 @@ pydantic
 sqlalchemy
 alembic>=1.13,<2
 pymysql
+cryptography==46.0.3
 PyJWT[crypto]>=2.8
