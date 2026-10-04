@@ -1,8 +1,11 @@
 FROM python:3.11-slim
 
 RUN apt-get update \
- && apt-get install -y --no-install-recommends build-essential curl \
+ && apt-get install -y --no-install-recommends curl \
  && rm -rf /var/lib/apt/lists/*
+
+RUN groupadd --system --gid 10001 omnibioai \
+ && useradd --system --uid 10001 --gid 10001 --create-home --home-dir /home/omnibioai omnibioai
 
 WORKDIR /app
 
@@ -10,6 +13,10 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
+
+RUN chown -R omnibioai:omnibioai /app /home/omnibioai
+USER omnibioai
+ENV HOME=/home/omnibioai TMPDIR=/tmp
 
 EXPOSE 8004
 
