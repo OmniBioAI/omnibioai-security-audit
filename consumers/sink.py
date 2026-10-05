@@ -1,3 +1,13 @@
+"""
+OmniBioAI consumers.sink.
+
+Purpose:
+    Defines Sink with write methods for consumers.sink.
+
+Author:
+    Manish Kumar <manish@omnibioai.org>
+"""
+
 from sqlalchemy.exc import IntegrityError
 
 from audit.config import AuditConfig

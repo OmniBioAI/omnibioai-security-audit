@@ -1,3 +1,13 @@
+"""
+OmniBioAI api.deps.
+
+Purpose:
+    Defines require_platform_admin for api.deps.
+
+Author:
+    Manish Kumar <manish@omnibioai.org>
+"""
+
 from __future__ import annotations
 
 from fastapi import Header, HTTPException

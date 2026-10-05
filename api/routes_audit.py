@@ -1,3 +1,13 @@
+"""
+OmniBioAI api.routes_audit.
+
+Purpose:
+    Defines HTTP route handlers for api.routes_audit, including health and test_log.
+
+Author:
+    Manish Kumar <manish@omnibioai.org>
+"""
+
 from fastapi import APIRouter
 from audit.logger import AuditLogger
 

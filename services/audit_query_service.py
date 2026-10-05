@@ -1,3 +1,13 @@
+"""
+OmniBioAI services.audit_query_service.
+
+Purpose:
+    Defines list_audit_events, project_safe_metadata and list_safe_audit_events for services.audit_query_service.
+
+Author:
+    Manish Kumar <manish@omnibioai.org>
+"""
+
 from datetime import datetime
 
 from sqlalchemy.orm import Session

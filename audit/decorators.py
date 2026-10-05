@@ -1,3 +1,13 @@
+"""
+OmniBioAI audit.decorators.
+
+Purpose:
+    Defines audit for audit.decorators.
+
+Author:
+    Manish Kumar <manish@omnibioai.org>
+"""
+
 import functools
 
 from audit.config import AuditConfig

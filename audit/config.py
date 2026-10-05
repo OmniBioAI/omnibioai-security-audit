@@ -1,3 +1,13 @@
+"""
+OmniBioAI audit.config.
+
+Purpose:
+    Defines the AuditConfig class for audit.config.
+
+Author:
+    Manish Kumar <manish@omnibioai.org>
+"""
+
 import os
 
 

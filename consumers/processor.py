@@ -1,3 +1,13 @@
+"""
+OmniBioAI consumers.processor.
+
+Purpose:
+    Defines process_event, parse_audit_event and classify_event_integrity for consumers.processor.
+
+Author:
+    Manish Kumar <manish@omnibioai.org>
+"""
+
 from __future__ import annotations
 
 import json

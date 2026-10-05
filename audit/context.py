@@ -1,3 +1,13 @@
+"""
+OmniBioAI audit.context.
+
+Purpose:
+    Defines set_trace_id, get_trace_id, set_user_id and get_user_id for audit.context.
+
+Author:
+    Manish Kumar <manish@omnibioai.org>
+"""
+
 from contextvars import ContextVar
 from typing import Optional
 

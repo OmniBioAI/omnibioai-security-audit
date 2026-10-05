@@ -1,3 +1,13 @@
+"""
+OmniBioAI audit.events.
+
+Purpose:
+    Defines the AuditEvents class for audit.events.
+
+Author:
+    Manish Kumar <manish@omnibioai.org>
+"""
+
 class AuditEvents:
     AUTH_LOGIN = "auth_login"
     AUTH_FAILED = "auth_failed"

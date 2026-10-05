@@ -1,3 +1,13 @@
+"""
+OmniBioAI audit.contexts.
+
+Purpose:
+    Defines inject_context for audit.contexts.
+
+Author:
+    Manish Kumar <manish@omnibioai.org>
+"""
+
 from audit.context import set_trace_id, set_user_id, set_identity
 from audit.identity import validate_identity_token
 import uuid

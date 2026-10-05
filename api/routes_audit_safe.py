@@ -1,3 +1,13 @@
+"""
+OmniBioAI api.routes_audit_safe.
+
+Purpose:
+    Defines HTTP route handlers for api.routes_audit_safe, including list_safe_audit_events.
+
+Author:
+    Manish Kumar <manish@omnibioai.org>
+"""
+
 from datetime import datetime
 from typing import Literal
 

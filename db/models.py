@@ -1,3 +1,13 @@
+"""
+OmniBioAI db.models.
+
+Purpose:
+    Defines AuditEventRecord, QuarantinedAuditEvent and AuditLegalHold for db.models.
+
+Author:
+    Manish Kumar <manish@omnibioai.org>
+"""
+
 from sqlalchemy import JSON, Column, DateTime, Index, Integer, String, Text
 from sqlalchemy.sql import func
 

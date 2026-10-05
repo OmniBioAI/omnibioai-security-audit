@@ -1,3 +1,13 @@
+"""
+OmniBioAI consumers.stream_reader.
+
+Purpose:
+    Defines StreamReader with read, ensure_group, read_group and ack methods for consumers.stream_reader.
+
+Author:
+    Manish Kumar <manish@omnibioai.org>
+"""
+
 import redis
 from redis.exceptions import ResponseError
 

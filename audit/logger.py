@@ -1,3 +1,13 @@
+"""
+OmniBioAI audit.logger.
+
+Purpose:
+    Defines AuditLogger with log methods for audit.logger.
+
+Author:
+    Manish Kumar <manish@omnibioai.org>
+"""
+
 import json
 
 import redis.asyncio as redis

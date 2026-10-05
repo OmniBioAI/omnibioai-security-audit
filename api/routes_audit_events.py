@@ -1,3 +1,13 @@
+"""
+OmniBioAI api.routes_audit_events.
+
+Purpose:
+    Defines HTTP route handlers for api.routes_audit_events, including list_audit_events.
+
+Author:
+    Manish Kumar <manish@omnibioai.org>
+"""
+
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, Query

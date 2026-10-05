@@ -1,3 +1,13 @@
+"""
+OmniBioAI audit.models.
+
+Purpose:
+    Defines the AuditEvent data model for audit.models.
+
+Author:
+    Manish Kumar <manish@omnibioai.org>
+"""
+
 import uuid
 from datetime import datetime
 from typing import Any, Literal

@@ -1,3 +1,13 @@
+"""
+OmniBioAI schemas.audit.
+
+Purpose:
+    Defines AuditEventOut, AuditEventListResponse, FreshnessOut and RetentionOut for schemas.audit.
+
+Author:
+    Manish Kumar <manish@omnibioai.org>
+"""
+
 from datetime import datetime
 from typing import Any
 

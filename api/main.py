@@ -1,3 +1,13 @@
+"""
+OmniBioAI api.main.
+
+Purpose:
+    Defines app values for api.main.
+
+Author:
+    Manish Kumar <manish@omnibioai.org>
+"""
+
 from fastapi import FastAPI
 
 from api.routes_audit import router
