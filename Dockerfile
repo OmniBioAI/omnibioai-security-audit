@@ -1,5 +1,11 @@
+# OmniBioAI — Security Audit
+# Purpose: Build the security audit API container.
+# Author: Manish Kumar <manish@omnibioai.org>
+
+# Base image
 FROM python:3.11-slim
 
+# System dependencies
 RUN apt-get update \
  && apt-get install -y --no-install-recommends curl \
  && rm -rf /var/lib/apt/lists/*
@@ -9,13 +15,16 @@ RUN groupadd --system --gid 10001 omnibioai \
 
 WORKDIR /app
 
+# Python dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Application source
 COPY . .
 
 RUN chown -R omnibioai:omnibioai /app /home/omnibioai
 USER omnibioai
+# Runtime configuration
 ENV HOME=/home/omnibioai TMPDIR=/tmp
 
 EXPOSE 8004
@@ -29,4 +38,5 @@ EXPOSE 8004
 HEALTHCHECK --interval=10s --timeout=3s --start-period=5s --retries=3 \
   CMD curl -f http://localhost:8004/health || exit 1
 
+# Entrypoint and default command
 CMD ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8004"]

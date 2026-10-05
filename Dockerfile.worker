@@ -1,5 +1,11 @@
+# OmniBioAI — Security Audit Worker
+# Purpose: Run the Redis Streams audit-event consumer.
+# Author: Manish Kumar <manish@omnibioai.org>
+
+# Base image
 FROM python:3.11-slim
 
+# System dependencies
 RUN apt-get update \
  && apt-get install -y --no-install-recommends curl \
  && rm -rf /var/lib/apt/lists/*
@@ -9,13 +15,16 @@ RUN groupadd --system --gid 10001 omnibioai \
 
 WORKDIR /app
 
+# Python dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Application source
 COPY . .
 
 RUN chown -R omnibioai:omnibioai /app /home/omnibioai
 USER omnibioai
+# Runtime configuration
 ENV HOME=/home/omnibioai TMPDIR=/tmp
 
 # Runs the Redis Streams consumer group -> audit_events table pipeline.
