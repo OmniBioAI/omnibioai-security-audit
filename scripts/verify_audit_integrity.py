@@ -25,6 +25,8 @@ Usage:
 from __future__ import annotations
 
 import os
+import hmac
+import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -49,16 +51,37 @@ _AUDIT_EVENT_REQUIRED = ("event_id", "timestamp", "service", "event_type", "acti
 _QUARANTINE_REQUIRED = ("stream_message_id", "failure_category", "delivery_attempts")
 
 
-def _resolve_secret() -> str:
-    secret = os.environ.get("JWT_SECRET")
-    if not secret:
-        print(
-            "[FAIL] JWT_SECRET must be set -- verification cannot proceed without "
-            "the same secret record_integrity_hash was computed with",
-            file=sys.stderr,
-        )
+def _resolve_keyring() -> dict[str, str]:
+    """Load verification-only legacy material and dedicated new-record key.
+
+    The legacy key is never passed to a writer or JWT decoder. The operator
+    may omit it after policy-approved retirement; legacy rows then report as
+    unverifiable and the command fails closed.
+    """
+    keys: dict[str, str] = {}
+    legacy = os.environ.get("AUDIT_LEGACY_RECORD_VERIFY_KEY")
+    key_id = os.environ.get("AUDIT_RECORD_INTEGRITY_KEY_ID")
+    current = os.environ.get("AUDIT_RECORD_INTEGRITY_KEY")
+    if legacy:
+        keys["__legacy__"] = legacy
+    if current and key_id:
+        keys[key_id] = current
+    if current and not key_id:
+        print("[FAIL] AUDIT_RECORD_INTEGRITY_KEY_ID is required with the current integrity key", file=sys.stderr)
         sys.exit(1)
-    return secret
+    if current and key_id == "__legacy__":
+        print("[FAIL] reserved audit integrity key ID is not allowed", file=sys.stderr)
+        sys.exit(1)
+    if current and (len(current.encode("utf-8")) < 32 or not re.fullmatch(r"[A-Za-z0-9._-]{1,64}", key_id or "")):
+        print("[FAIL] current audit integrity key or key ID does not meet policy", file=sys.stderr)
+        sys.exit(1)
+    if legacy and current and hmac.compare_digest(legacy, current):
+        print("[FAIL] legacy verification key and current signing key must be independent", file=sys.stderr)
+        sys.exit(1)
+    if not keys:
+        print("[FAIL] no audit record verification keys are configured", file=sys.stderr)
+        sys.exit(1)
+    return keys
 
 
 def _resolve_session():
@@ -85,16 +108,25 @@ def _to_dict(orm_row, columns: tuple[str, ...]) -> dict:
     return {col: getattr(orm_row, col) for col in columns}
 
 
-def verify_audit_events(session, secret: str) -> dict:
-    stats = {"checked": 0, "valid": 0, "invalid": [], "no_baseline": 0, "structural": []}
+def _selected_key(record: dict, keys: dict[str, str] | str) -> tuple[str | None, str | None]:
+    key_id = record.get("integrity_key_id")
+    if isinstance(keys, str):  # compatibility for direct legacy tests/callers
+        return keys, None if key_id is None else key_id
+    if key_id is None:
+        return keys.get("__legacy__"), None
+    return keys.get(key_id), key_id
+
+
+def verify_audit_events(session, keys: dict[str, str] | str) -> dict:
+    stats = {"checked": 0, "valid": 0, "invalid": [], "unverifiable": [], "no_baseline": 0, "structural": []}
     columns = (
         "event_id", "timestamp", "service", "event_type", "user_id", "organization_id",
         "tenant_scope", "action", "resource", "decision", "reason", "trace_id", "context",
-        "integrity_status", "record_integrity_hash",
+        "integrity_status", "record_integrity_hash", "integrity_key_id",
     )
     seen_ids = set()
     for orm_row in session.query(AuditEventRecord).yield_per(500):
-        row = _to_dict(orm_row, columns)
+        row = {col: getattr(orm_row, col, None) for col in columns}
         stats["checked"] += 1
         if row["event_id"] in seen_ids:
             stats["structural"].append(f"duplicate event_id: {row['event_id']}")
@@ -109,24 +141,27 @@ def verify_audit_events(session, secret: str) -> dict:
             continue
 
         record = row
-        if verify_audit_event_hash(record, secret):
+        secret, key_id = _selected_key(record, keys)
+        if secret is None:
+            stats["unverifiable"].append(row["event_id"])
+        elif verify_audit_event_hash(record, secret, key_id=key_id):
             stats["valid"] += 1
-            if audit_event_hash_matches_legacy_utc_form(record, secret):
+            if key_id is None and audit_event_hash_matches_legacy_utc_form(record, secret):
                 stats["valid_legacy_tz"] = stats.get("valid_legacy_tz", 0) + 1
         else:
             stats["invalid"].append(row["event_id"])
     return stats
 
 
-def verify_quarantine_records(session, secret: str) -> dict:
-    stats = {"checked": 0, "valid": 0, "invalid": [], "no_baseline": 0, "structural": []}
+def verify_quarantine_records(session, keys: dict[str, str] | str) -> dict:
+    stats = {"checked": 0, "valid": 0, "invalid": [], "unverifiable": [], "no_baseline": 0, "structural": []}
     columns = (
         "stream_message_id", "raw_data", "raw_signature", "service", "failure_category",
-        "failure_detail", "delivery_attempts", "record_integrity_hash",
+        "failure_detail", "delivery_attempts", "record_integrity_hash", "integrity_key_id",
     )
     seen_ids = set()
     for orm_row in session.query(QuarantinedAuditEvent).yield_per(500):
-        row = _to_dict(orm_row, columns)
+        row = {col: getattr(orm_row, col, None) for col in columns}
         stats["checked"] += 1
         if row["stream_message_id"] in seen_ids:
             stats["structural"].append(f"duplicate stream_message_id: {row['stream_message_id']}")
@@ -141,7 +176,10 @@ def verify_quarantine_records(session, secret: str) -> dict:
             continue
 
         record = row
-        if verify_quarantine_record_hash(record, secret):
+        secret, key_id = _selected_key(record, keys)
+        if secret is None:
+            stats["unverifiable"].append(row["stream_message_id"])
+        elif verify_quarantine_record_hash(record, secret, key_id=key_id):
             stats["valid"] += 1
         else:
             stats["invalid"].append(row["stream_message_id"])
@@ -152,6 +190,8 @@ def _report(name: str, stats: dict) -> bool:
     """Returns True if this table's verification found no problems."""
     print(f"[INFO] {name}: {stats['checked']} record(s) checked")
     print(f"[INFO] {name}: {stats['valid']} valid, {stats['no_baseline']} no-baseline (pre-dates this feature)")
+    if stats.get("unverifiable"):
+        print(f"[INFO] {name}: {len(stats['unverifiable'])} unverifiable (verification key unavailable)")
     if stats.get("valid_legacy_tz"):
         print(f"[INFO] {name}: {stats['valid_legacy_tz']} of the valid record(s) matched the legacy '+00:00' timestamp form")
     ok = True
@@ -165,6 +205,12 @@ def _report(name: str, stats: dict) -> bool:
         print(f"[FAIL] {name}: {len(stats['structural'])} structural problem(s):", file=sys.stderr)
         for problem in stats["structural"]:
             print(f"[FAIL] {name}: {problem}", file=sys.stderr)
+    if stats.get("unverifiable"):
+        ok = False
+        print(f"[FAIL] {name}: {len(stats['unverifiable'])} record(s) have no configured verification key", file=sys.stderr)
+    if stats["no_baseline"]:
+        ok = False
+        print(f"[FAIL] {name}: {stats['no_baseline']} record(s) have no integrity baseline", file=sys.stderr)
     if ok:
         print(f"[OK] {name}: no integrity or structural problems found")
     return ok
@@ -200,12 +246,12 @@ def _write_status_file(passed: bool, events_stats: dict, quarantine_stats: dict)
 
 
 def main() -> int:
-    secret = _resolve_secret()
+    keys = _resolve_keyring()
     session = _resolve_session()
 
     try:
-        events_stats = verify_audit_events(session, secret)
-        quarantine_stats = verify_quarantine_records(session, secret)
+        events_stats = verify_audit_events(session, keys)
+        quarantine_stats = verify_quarantine_records(session, keys)
         events_ok = _report("audit_events", events_stats)
         quarantine_ok = _report("quarantined_audit_events", quarantine_stats)
     finally:

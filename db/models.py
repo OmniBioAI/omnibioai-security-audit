@@ -61,6 +61,8 @@ class AuditEventRecord(Base):
     # retroactive integrity baseline and are honestly reported as such
     # by the verification tool, never silently treated as verified.
     record_integrity_hash = Column(String(64), nullable=True)
+    # NULL identifies an immutable historical row using the legacy key.
+    integrity_key_id = Column(String(64), nullable=True)
 
     __table_args__ = (
         Index("ix_audit_events_org_timestamp_event", "organization_id", "timestamp", "event_id"),
@@ -111,6 +113,7 @@ class QuarantinedAuditEvent(Base):
     # above -- poison evidence must not be easier to alter undetected
     # than canonical evidence.
     record_integrity_hash = Column(String(64), nullable=True)
+    integrity_key_id = Column(String(64), nullable=True)
 
 
 class AuditLegalHold(Base):

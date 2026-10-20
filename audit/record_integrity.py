@@ -93,7 +93,7 @@ QUARANTINE_RECORD_FIELDS = (
 )
 
 
-def _canonical_message(record: dict, fields: tuple[str, ...], *, legacy_utc_suffix: bool = False) -> bytes:
+def _canonical_message(record: dict, fields: tuple[str, ...], *, legacy_utc_suffix: bool = False, key_id: str | None = None) -> bytes:
     parts = []
     for field in fields:
         value = record.get(field)
@@ -134,23 +134,25 @@ def _canonical_message(record: dict, fields: tuple[str, ...], *, legacy_utc_suff
                 value = value.replace(tzinfo=timezone.utc)
             value = value.isoformat()
         parts.append(f"{field}={value!s}")
+    if key_id is not None:
+        parts.append(f"integrity_key_id={key_id}")
     return "\n".join(parts).encode()
 
 
-def compute_audit_event_hash(record: dict, secret: str) -> str:
+def compute_audit_event_hash(record: dict, secret: str, *, key_id: str | None = None) -> str:
     """`record` is a dict with (at least) AUDIT_EVENT_FIELDS' keys --
     either the dict about to be inserted, or an ORM row's __dict__-like
     mapping when re-verifying. Returns a hex-encoded HMAC-SHA256."""
-    mac = hmac.new(_integrity_key(secret), _canonical_message(record, AUDIT_EVENT_FIELDS), hashlib.sha256)
+    mac = hmac.new(_integrity_key(secret), _canonical_message(record, AUDIT_EVENT_FIELDS, key_id=key_id), hashlib.sha256)
     return mac.hexdigest()
 
 
-def compute_quarantine_record_hash(record: dict, secret: str) -> str:
-    mac = hmac.new(_integrity_key(secret), _canonical_message(record, QUARANTINE_RECORD_FIELDS), hashlib.sha256)
+def compute_quarantine_record_hash(record: dict, secret: str, *, key_id: str | None = None) -> str:
+    mac = hmac.new(_integrity_key(secret), _canonical_message(record, QUARANTINE_RECORD_FIELDS, key_id=key_id), hashlib.sha256)
     return mac.hexdigest()
 
 
-def verify_audit_event_hash(record: dict, secret: str) -> bool:
+def verify_audit_event_hash(record: dict, secret: str, *, key_id: str | None = None) -> bool:
     """False for a tampered row, a wrong secret, AND a row with no
     stored hash (record_integrity_hash is None -- pre-existing rows
     from before this column existed, or a row that was never through
@@ -159,12 +161,12 @@ def verify_audit_event_hash(record: dict, secret: str) -> bool:
     if not stored:
         return False
     try:
-        expected = compute_audit_event_hash(record, secret)
+        expected = compute_audit_event_hash(record, secret, key_id=key_id)
     except Exception:  # noqa: BLE001 -- a malformed record fails verification, it does not crash the verifier
         return False
     if hmac.compare_digest(stored, expected):
         return True
-    return audit_event_hash_matches_legacy_utc_form(record, secret)
+    return audit_event_hash_matches_legacy_utc_form(record, secret) if key_id is None else False
 
 
 def audit_event_hash_matches_legacy_utc_form(record: dict, secret: str) -> bool:
@@ -189,12 +191,12 @@ def audit_event_hash_matches_legacy_utc_form(record: dict, secret: str) -> bool:
     return hmac.compare_digest(stored, mac.hexdigest())
 
 
-def verify_quarantine_record_hash(record: dict, secret: str) -> bool:
+def verify_quarantine_record_hash(record: dict, secret: str, *, key_id: str | None = None) -> bool:
     stored = record.get("record_integrity_hash")
     if not stored:
         return False
     try:
-        expected = compute_quarantine_record_hash(record, secret)
+        expected = compute_quarantine_record_hash(record, secret, key_id=key_id)
     except Exception:  # noqa: BLE001 -- same as above
         return False
     return hmac.compare_digest(stored, expected)

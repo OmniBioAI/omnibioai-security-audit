@@ -35,6 +35,7 @@ class Sink:
         propagates uncaught so the worker knows NOT to ack and can retry.
         """
         integrity_status = event.get("integrity_status", "unsigned")
+        integrity_key, integrity_key_id = AuditConfig.require_record_integrity_key()
         # Hash and store the same naive-UTC value. The driver drops
         # tzinfo without converting, so an aware non-UTC timestamp would
         # otherwise be persisted as the wrong wall-clock time.
@@ -60,7 +61,8 @@ class Sink:
                 "context": event.get("context", {}),
                 "integrity_status": integrity_status,
             },
-            AuditConfig.EVENT_SIGNING_SECRET,
+            integrity_key,
+            key_id=integrity_key_id,
         )
         record = AuditEventRecord(
             event_id=event["event_id"],
@@ -83,6 +85,7 @@ class Sink:
             # unsigned event, not an error.
             integrity_status=integrity_status,
             record_integrity_hash=record_integrity_hash,
+            integrity_key_id=integrity_key_id,
         )
         self.db_session.add(record)
         try:

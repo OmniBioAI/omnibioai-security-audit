@@ -93,23 +93,43 @@ def _add_quarantine_row(db_session, hash_mode="valid", **overrides):
 
 
 # ---------------------------------------------------------------------------
-# _resolve_secret / _resolve_session
+# _resolve_keyring / _resolve_session
 # ---------------------------------------------------------------------------
 
 
-def test_resolve_secret_returns_configured_value(monkeypatch):
-    """Return the configured JWT_SECRET value."""
-    monkeypatch.setenv("JWT_SECRET", "a-real-secret")
-    assert vai._resolve_secret() == "a-real-secret"
+def test_resolve_keyring_returns_separate_legacy_and_current_keys(monkeypatch):
+    monkeypatch.setenv("AUDIT_LEGACY_RECORD_VERIFY_KEY", "legacy-verification-only")
+    monkeypatch.setenv("AUDIT_RECORD_INTEGRITY_KEY", "new-record-key-material-at-least-32-bytes")
+    monkeypatch.setenv("AUDIT_RECORD_INTEGRITY_KEY_ID", "record-v2")
+    assert vai._resolve_keyring() == {
+        "__legacy__": "legacy-verification-only",
+        "record-v2": "new-record-key-material-at-least-32-bytes",
+    }
 
 
-def test_resolve_secret_exits_when_unset(monkeypatch, capsys):
-    """Exit 1 with a [FAIL] message when JWT_SECRET is unset."""
-    monkeypatch.delenv("JWT_SECRET", raising=False)
+def test_resolve_keyring_exits_when_no_verification_material(monkeypatch, capsys):
+    monkeypatch.delenv("AUDIT_LEGACY_RECORD_VERIFY_KEY", raising=False)
+    monkeypatch.delenv("AUDIT_RECORD_INTEGRITY_KEY", raising=False)
+    monkeypatch.delenv("AUDIT_RECORD_INTEGRITY_KEY_ID", raising=False)
     with pytest.raises(SystemExit) as exc_info:
-        vai._resolve_secret()
+        vai._resolve_keyring()
     assert exc_info.value.code == 1
-    assert "JWT_SECRET must be set" in capsys.readouterr().err
+    assert "no audit record verification keys" in capsys.readouterr().err
+
+
+def test_resolve_keyring_rejects_reserved_or_reused_keys(monkeypatch, capsys):
+    monkeypatch.setenv("AUDIT_LEGACY_RECORD_VERIFY_KEY", "same-test-material-32-bytes-long")
+    monkeypatch.setenv("AUDIT_RECORD_INTEGRITY_KEY", "same-test-material-32-bytes-long")
+    monkeypatch.setenv("AUDIT_RECORD_INTEGRITY_KEY_ID", "record-v2")
+    with pytest.raises(SystemExit):
+        vai._resolve_keyring()
+    assert "must be independent" in capsys.readouterr().err
+
+    monkeypatch.setenv("AUDIT_RECORD_INTEGRITY_KEY", "new-independent-test-material-32b")
+    monkeypatch.setenv("AUDIT_RECORD_INTEGRITY_KEY_ID", "__legacy__")
+    with pytest.raises(SystemExit):
+        vai._resolve_keyring()
+    assert "reserved audit integrity key ID" in capsys.readouterr().err
 
 
 def test_resolve_session_exits_when_no_url_configured(monkeypatch, capsys):
@@ -160,6 +180,7 @@ def test_verify_audit_events_counts_valid_tampered_and_no_baseline(db_session):
     assert stats["valid"] == 1
     assert stats["invalid"] == ["e-tampered"]
     assert stats["no_baseline"] == 1
+    assert stats["unverifiable"] == []
     assert stats["structural"] == []
 
 
@@ -207,7 +228,31 @@ def test_verify_quarantine_records_counts_valid_tampered_and_no_baseline(db_sess
     assert stats["valid"] == 1
     assert stats["invalid"] == ["q-tampered"]
     assert stats["no_baseline"] == 1
+    assert stats["unverifiable"] == []
     assert stats["structural"] == []
+
+
+def test_unknown_key_id_is_unverifiable_not_valid(db_session):
+    fields = _audit_fields(event_id="e-unknown-key")
+    fields["record_integrity_hash"] = compute_audit_event_hash(fields, "synthetic-key", key_id="missing-v3")
+    row = AuditEventRecord(**fields, integrity_key_id="missing-v3")
+    db_session.add(row)
+    db_session.commit()
+
+    stats = vai.verify_audit_events(db_session, {"test-record-v1": "new-test-key"})
+    assert stats["valid"] == 0
+    assert stats["invalid"] == []
+    assert stats["unverifiable"] == ["e-unknown-key"]
+
+
+def test_new_key_id_is_bound_to_hash_and_wrong_key_fails():
+    from audit.record_integrity import verify_audit_event_hash
+
+    record = _audit_fields(event_id="e-key-bound")
+    record["record_integrity_hash"] = compute_audit_event_hash(record, "synthetic-new-key", key_id="record-v4")
+    assert verify_audit_event_hash(record, "synthetic-new-key", key_id="record-v4")
+    assert not verify_audit_event_hash(record, "wrong-key", key_id="record-v4")
+    assert not verify_audit_event_hash(record, "synthetic-new-key", key_id="other-id")
 
 
 def test_verify_quarantine_records_flags_empty_required_field_as_structural():
@@ -301,7 +346,7 @@ def test_main_passes_and_exits_zero_with_no_alert(monkeypatch, db_session, capsy
     """Exit 0, print [OK], and never emit a security alert when everything verifies clean."""
     monkeypatch.setenv("JWT_SECRET", SECRET)
     monkeypatch.delenv("AUDIT_HEALTH_STATUS_DIR", raising=False)
-    monkeypatch.setattr(vai, "_resolve_secret", lambda: SECRET)
+    monkeypatch.setattr(vai, "_resolve_keyring", lambda: {"__legacy__": SECRET})
     monkeypatch.setattr(vai, "_resolve_session", lambda: db_session)
     alerts = []
     monkeypatch.setattr(vai, "emit_security_alert", lambda **kwargs: alerts.append(kwargs))
@@ -320,7 +365,7 @@ def test_main_fails_exits_one_and_emits_alert(monkeypatch, db_session, capsys):
     """Exit 1, print [FAIL], and emit a critical security alert when a tampered record is found."""
     monkeypatch.setenv("JWT_SECRET", SECRET)
     monkeypatch.delenv("AUDIT_HEALTH_STATUS_DIR", raising=False)
-    monkeypatch.setattr(vai, "_resolve_secret", lambda: SECRET)
+    monkeypatch.setattr(vai, "_resolve_keyring", lambda: {"__legacy__": SECRET})
     monkeypatch.setattr(vai, "_resolve_session", lambda: db_session)
     alerts = []
     monkeypatch.setattr(vai, "emit_security_alert", lambda **kwargs: alerts.append(kwargs))
@@ -339,7 +384,7 @@ def test_main_fails_exits_one_and_emits_alert(monkeypatch, db_session, capsys):
 
 def test_main_closes_the_session_even_when_verification_raises(monkeypatch):
     """Close the resolved session in a finally block, even when verification itself raises."""
-    monkeypatch.setattr(vai, "_resolve_secret", lambda: SECRET)
+    monkeypatch.setattr(vai, "_resolve_keyring", lambda: {"__legacy__": SECRET})
     broken_session = MagicMock()
     broken_session.query.side_effect = RuntimeError("db exploded")
     monkeypatch.setattr(vai, "_resolve_session", lambda: broken_session)
@@ -355,7 +400,7 @@ def test_main_writes_status_file_when_configured(monkeypatch, db_session, tmp_pa
     configured."""
     monkeypatch.setenv("JWT_SECRET", SECRET)
     monkeypatch.setenv("AUDIT_HEALTH_STATUS_DIR", str(tmp_path))
-    monkeypatch.setattr(vai, "_resolve_secret", lambda: SECRET)
+    monkeypatch.setattr(vai, "_resolve_keyring", lambda: {"__legacy__": SECRET})
     monkeypatch.setattr(vai, "_resolve_session", lambda: db_session)
     _add_audit_row(db_session, hash_mode="valid", event_id="e1")
     db_session.commit()
@@ -373,7 +418,9 @@ def test_main_writes_status_file_when_configured(monkeypatch, db_session, tmp_pa
 
 def test_dunder_main_exits_with_mains_return_code(monkeypatch):
     """Exit with main()'s own return code when run as a script."""
-    monkeypatch.delenv("JWT_SECRET", raising=False)  # cheapest deterministic path: _resolve_secret's own sys.exit(1)
+    monkeypatch.delenv("AUDIT_LEGACY_RECORD_VERIFY_KEY", raising=False)
+    monkeypatch.delenv("AUDIT_RECORD_INTEGRITY_KEY", raising=False)
+    monkeypatch.delenv("AUDIT_RECORD_INTEGRITY_KEY_ID", raising=False)
 
     with pytest.raises(SystemExit) as exc_info:
         runpy.run_path(vai.__file__, run_name="__main__")

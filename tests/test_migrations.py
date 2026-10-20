@@ -162,6 +162,57 @@ def test_existing_rows_backfill_to_unsigned_on_upgrade(tmp_path):
     assert row[0] == "unsigned"
 
 
+def test_integrity_key_id_migration_is_additive_and_preserves_legacy_hash(tmp_path):
+    db_file = tmp_path / "integrity_key_id.db"
+    db_url = f"sqlite:///{db_file}"
+    cfg = _alembic_config(db_url)
+    command.upgrade(cfg, "0005_retention_immutability")
+    engine = create_engine(db_url)
+    from sqlalchemy import text
+
+    legacy_hash = "a" * 64
+    with engine.begin() as conn:
+        conn.execute(text(
+            "INSERT INTO audit_events (event_id, timestamp, service, event_type, action, context, "
+            "integrity_status, record_integrity_hash) VALUES "
+            "('legacy-key-id-row', '2026-01-01 00:00:00', 'svc', 'test', '', '{}', 'unsigned', :hash)"
+        ), {"hash": legacy_hash})
+    command.upgrade(cfg, "head")
+    inspector = inspect(engine)
+    for table in ("audit_events", "quarantined_audit_events"):
+        cols = {column["name"]: column for column in inspector.get_columns(table)}
+        assert cols["integrity_key_id"]["nullable"] is True
+    with engine.connect() as conn:
+        row = conn.execute(text(
+            "SELECT record_integrity_hash, integrity_key_id FROM audit_events "
+            "WHERE event_id='legacy-key-id-row'"
+        )).one()
+    assert row == (legacy_hash, None)
+    engine.dispose()
+
+
+def test_integrity_key_id_downgrade_refuses_to_drop_live_key_metadata(tmp_path):
+    db_file = tmp_path / "integrity_key_id_downgrade.db"
+    db_url = f"sqlite:///{db_file}"
+    cfg = _alembic_config(db_url)
+    command.upgrade(cfg, "head")
+    engine = create_engine(db_url)
+    from sqlalchemy import text
+
+    with engine.begin() as conn:
+        conn.execute(text(
+            "INSERT INTO audit_events (event_id, timestamp, service, event_type, action, context, "
+            "integrity_status, record_integrity_hash, integrity_key_id) VALUES "
+            "('versioned-row', '2026-01-01 00:00:00', 'svc', 'test', '', '{}', 'unsigned', :hash, 'v2')"
+        ), {"hash": "b" * 64})
+    import pytest
+
+    with pytest.raises(RuntimeError, match="cannot downgrade while audit_events"):
+        command.downgrade(cfg, "0005_retention_immutability")
+    assert "integrity_key_id" in {c["name"] for c in inspect(engine).get_columns("audit_events")}
+    engine.dispose()
+
+
 def test_downgrade_to_0001_removes_integrity_status_column_only(tmp_path):
     """Distinct from test_downgrade_drops_audit_events_table above (which
     downgrades all the way to "base", dropping the whole table) -- this

@@ -60,6 +60,7 @@ class QuarantineSink:
         self.db_session = db_session
 
     def write(self, message_id: str, fields: dict, delivery_attempts: int) -> bool:
+        integrity_key, integrity_key_id = AuditConfig.require_record_integrity_key()
         raw_data = fields.get("data")
         raw_signature = fields.get("sig")
         failure_category, service, failure_detail = classify_poison_reason(raw_data)
@@ -77,7 +78,8 @@ class QuarantineSink:
                 "failure_detail": failure_detail,
                 "delivery_attempts": delivery_attempts,
             },
-            AuditConfig.EVENT_SIGNING_SECRET,
+            integrity_key,
+            key_id=integrity_key_id,
         )
         record = QuarantinedAuditEvent(
             stream_message_id=message_id,
@@ -88,6 +90,7 @@ class QuarantineSink:
             failure_detail=failure_detail,
             delivery_attempts=delivery_attempts,
             record_integrity_hash=record_integrity_hash,
+            integrity_key_id=integrity_key_id,
         )
         self.db_session.add(record)
         try:

@@ -39,6 +39,31 @@ def test_sink_write_persists_event(db_session):
     assert fetched is not None
     assert fetched.service == "auth"
     assert fetched.user_id == "u1"
+    assert fetched.integrity_key_id == "test-record-v1"
+
+
+def test_sink_fails_closed_without_dedicated_record_key(db_session, monkeypatch):
+    import pytest
+    from audit.config import AuditConfig
+
+    monkeypatch.setattr(AuditConfig, "RECORD_INTEGRITY_KEY", None)
+    with pytest.raises(RuntimeError, match="audit record integrity key"):
+        Sink(db_session).write(_event())
+    assert db_session.query(AuditEventRecord).count() == 0
+
+
+def test_record_integrity_configuration_rejects_weak_or_reused_key(monkeypatch):
+    import pytest
+    from audit.config import AuditConfig
+
+    monkeypatch.setattr(AuditConfig, "RECORD_INTEGRITY_KEY", "short")
+    monkeypatch.setattr(AuditConfig, "RECORD_INTEGRITY_KEY_ID", "v1")
+    with pytest.raises(RuntimeError, match="256-bit"):
+        AuditConfig.require_record_integrity_key()
+    monkeypatch.setattr(AuditConfig, "RECORD_INTEGRITY_KEY", "independent-key-material-32-bytes-long")
+    monkeypatch.setattr(AuditConfig, "EVENT_SIGNING_SECRET", "independent-key-material-32-bytes-long")
+    with pytest.raises(RuntimeError, match="independent"):
+        AuditConfig.require_record_integrity_key()
 
 
 def test_sink_write_persists_first_class_tenant(db_session):
@@ -152,7 +177,8 @@ def test_sink_stores_aware_timestamp_as_naive_utc_and_the_stored_row_verifies(db
     from audit.config import AuditConfig
     from audit.record_integrity import verify_audit_event_hash
 
-    monkeypatch.setattr(AuditConfig, "EVENT_SIGNING_SECRET", "sink-tz-test-secret")
+    monkeypatch.setattr(AuditConfig, "RECORD_INTEGRITY_KEY", "sink-tz-test-secret-value-over-32-bytes")
+    monkeypatch.setattr(AuditConfig, "RECORD_INTEGRITY_KEY_ID", "sink-tz-test-v1")
     chicago = timezone(timedelta(hours=-5))
     Sink(db_session).write(_event(event_id="evt-tz", timestamp=datetime(2026, 1, 1, 7, 0, 0, 600000, tzinfo=chicago)))
 
@@ -166,7 +192,7 @@ def test_sink_stores_aware_timestamp_as_naive_utc_and_the_stored_row_verifies(db
     columns = (
         "event_id", "timestamp", "service", "event_type", "user_id", "organization_id",
         "tenant_scope", "action", "resource", "decision", "reason", "trace_id", "context",
-        "integrity_status", "record_integrity_hash",
+        "integrity_status", "record_integrity_hash", "integrity_key_id",
     )
     row = {col: getattr(fetched, col) for col in columns}
-    assert verify_audit_event_hash(row, "sink-tz-test-secret") is True
+    assert verify_audit_event_hash(row, "sink-tz-test-secret-value-over-32-bytes", key_id="sink-tz-test-v1") is True
