@@ -8,7 +8,9 @@ Author:
     Manish Kumar <manish@omnibioai.org>
 """
 
+import hmac
 import os
+import re
 
 
 class AuditConfig:
@@ -106,16 +108,21 @@ class AuditConfig:
         os.getenv("AUDIT_WORKER_NOGROUP_RETRY_BACKOFF_SECONDS", "2.0")
     )
 
-    # PR2 of the audit:events integrity remediation (see audit/signing.py,
-    # PR1): reuses the same JWT_SECRET every other platform service (and
-    # this repo's own audit/jwt_verify.py) already reads -- not a new
-    # secret, not a new convention. Falls back to "change-me" the same way
-    # jwt_verify.JWT_SECRET does; a deployment that never set the real
-    # JWT_SECRET already has a forgeable HS256 token secret, so this adds
-    # no new exposure. See PR2's own report: the dev-compose worker
-    # container currently has JWT_SECRET unset entirely (falls back here
-    # too) -- until that's fixed, this worker cannot correctly verify a
-    # signature made with the platform's real secret. Harmless today since
-    # no producer signs yet (every event classifies as "unsigned"), but
-    # this default must not be trusted once a producer starts signing.
+    # Producer-event signatures remain a compatibility concern distinct
+    # from stored-record integrity.
     EVENT_SIGNING_SECRET = os.getenv("JWT_SECRET", "change-me")
+    # Stored-row HMACs use a dedicated credential. No fallback to JWT_SECRET.
+    RECORD_INTEGRITY_KEY = os.getenv("AUDIT_RECORD_INTEGRITY_KEY")
+    RECORD_INTEGRITY_KEY_ID = os.getenv("AUDIT_RECORD_INTEGRITY_KEY_ID")
+
+    @classmethod
+    def require_record_integrity_key(cls) -> tuple[str, str]:
+        key = cls.RECORD_INTEGRITY_KEY
+        key_id = cls.RECORD_INTEGRITY_KEY_ID
+        if not key or not key_id or len(key.encode("utf-8")) < 32:
+            raise RuntimeError("a 256-bit audit record integrity key and key ID are required")
+        if not re.fullmatch(r"[A-Za-z0-9._-]{1,64}", key_id):
+            raise RuntimeError("audit record integrity key ID has invalid format")
+        if cls.EVENT_SIGNING_SECRET and hmac.compare_digest(key, cls.EVENT_SIGNING_SECRET):
+            raise RuntimeError("audit record integrity key must be independent from event/JWT signing material")
+        return key, key_id

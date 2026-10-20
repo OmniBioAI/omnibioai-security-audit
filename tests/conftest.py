@@ -11,6 +11,15 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def isolated_audit_record_key(monkeypatch):
+    """Give write-path tests a synthetic dedicated key, never a JWT key."""
+    from audit.config import AuditConfig
+
+    monkeypatch.setattr(AuditConfig, "RECORD_INTEGRITY_KEY", "isolated-record-integrity-key-32-bytes")
+    monkeypatch.setattr(AuditConfig, "RECORD_INTEGRITY_KEY_ID", "test-record-v1")
+
+
 @pytest.fixture
 def mock_async_redis():
     """Provide an AsyncMock standing in for the async Redis client used by AuditLogger."""

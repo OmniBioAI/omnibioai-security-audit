@@ -531,7 +531,9 @@ def test_real_verify_audit_integrity_tool_distinguishes_valid_from_tampered(real
 
     Session = sessionmaker(bind=engine)
     with Session() as session:
-        stats = verify_audit_events(session, _integration_test_secret())
+        from audit.config import AuditConfig
+
+        stats = verify_audit_events(session, AuditConfig.RECORD_INTEGRITY_KEY)
 
     assert "evt-verify-tampered-2" in stats["invalid"]
     assert "evt-verify-valid-2" not in stats["invalid"]

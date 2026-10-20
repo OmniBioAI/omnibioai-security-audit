@@ -252,8 +252,8 @@ def test_restored_database_integrity_verification_reports_zero_tampering(restore
     engine = create_engine(restored_db)
     Session = sessionmaker(bind=engine)
     with Session() as session:
-        event_stats = verify_audit_events(session, AuditConfig.EVENT_SIGNING_SECRET)
-        quarantine_stats = verify_quarantine_records(session, AuditConfig.EVENT_SIGNING_SECRET)
+        event_stats = verify_audit_events(session, AuditConfig.RECORD_INTEGRITY_KEY)
+        quarantine_stats = verify_quarantine_records(session, AuditConfig.RECORD_INTEGRITY_KEY)
 
     assert event_stats["invalid"] == []
     assert event_stats["structural"] == []
