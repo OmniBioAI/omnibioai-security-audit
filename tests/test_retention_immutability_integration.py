@@ -46,6 +46,17 @@ except MissingTestMySQLEndpoint:
 _RUN_ID = uuid.uuid4().hex[:8]
 TEST_DB_NAME = f"omnibioai_audit_e3_test_{_RUN_ID}"
 _PROVISIONED_USER_NAMES = ("audit_writer", "audit_reader", "audit_maintenance")
+TEST_RECORD_INTEGRITY_KEY = "0123456789abcdef0123456789abcdef"
+TEST_RECORD_INTEGRITY_KEY_ID = "test-record-v1"
+
+
+@pytest.fixture(autouse=True)
+def real_backend_record_integrity_key(monkeypatch):
+    """Use test-only record signing material for real Sink writes."""
+    from audit.config import AuditConfig
+
+    monkeypatch.setattr(AuditConfig, "RECORD_INTEGRITY_KEY", TEST_RECORD_INTEGRITY_KEY)
+    monkeypatch.setattr(AuditConfig, "RECORD_INTEGRITY_KEY_ID", TEST_RECORD_INTEGRITY_KEY_ID)
 
 
 def _real_mysql_available():

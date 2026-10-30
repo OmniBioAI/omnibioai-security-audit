@@ -59,6 +59,17 @@ except MissingTestMySQLEndpoint:
 TEST_DB_NAME = "omnibioai_audit_p0_pel_test"
 TEST_STREAM = f"audit:events:p0-pel-test-{uuid.uuid4().hex[:8]}"
 TEST_GROUP = "audit-workers"
+TEST_RECORD_INTEGRITY_KEY = "0123456789abcdef0123456789abcdef"
+TEST_RECORD_INTEGRITY_KEY_ID = "test-record-v1"
+
+
+@pytest.fixture(autouse=True)
+def real_backend_record_integrity_key(monkeypatch):
+    """Use test-only record signing material for real Sink writes."""
+    from audit.config import AuditConfig
+
+    monkeypatch.setattr(AuditConfig, "RECORD_INTEGRITY_KEY", TEST_RECORD_INTEGRITY_KEY)
+    monkeypatch.setattr(AuditConfig, "RECORD_INTEGRITY_KEY_ID", TEST_RECORD_INTEGRITY_KEY_ID)
 
 
 def _real_backends_available():
