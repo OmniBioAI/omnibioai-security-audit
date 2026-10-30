@@ -87,10 +87,16 @@ def real_redis_stream():
     from audit.config import AuditConfig
     from consumers.stream_reader import StreamReader
 
+    if TEST_REDIS_URL is None:
+        pytest.skip(
+            "B0_TEST_REDIS_URL is not set; no real Redis endpoint is configured"
+        )
     original_stream = AuditConfig.STREAM_NAME
     original_group = AuditConfig.CONSUMER_GROUP
+    original_redis_url = AuditConfig.REDIS_URL
     AuditConfig.STREAM_NAME = TEST_STREAM
     AuditConfig.CONSUMER_GROUP = TEST_GROUP
+    AuditConfig.REDIS_URL = TEST_REDIS_URL
     try:
         reader = StreamReader()
         reader.ensure_group()
@@ -106,6 +112,7 @@ def real_redis_stream():
             print(f"[TEST TEARDOWN] stream delete failed (non-fatal): {cleanup_err}")
         AuditConfig.STREAM_NAME = original_stream
         AuditConfig.CONSUMER_GROUP = original_group
+        AuditConfig.REDIS_URL = original_redis_url
 
 
 @pytest.fixture
