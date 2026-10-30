@@ -76,7 +76,7 @@ def _real_backends_available():
 pytestmark = pytest.mark.skipif(
     not _real_backends_available(),
     reason="real Redis/MySQL not reachable (set B0_TEST_REDIS_URL / "
-    "B0_TEST_MYSQL_ROOT_URL, or run against the dev docker-compose stack)",
+    "B0_TEST_MYSQL_ROOT_URL)",
 )
 
 

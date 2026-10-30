@@ -12,12 +12,22 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
-def isolated_audit_record_key(monkeypatch):
-    """Give write-path tests a synthetic dedicated key, never a JWT key."""
+def test_audit_record_integrity_key(monkeypatch, request):
+    """Inject test-only integrity keys and explicit test backend URLs."""
     from audit.config import AuditConfig
 
-    monkeypatch.setattr(AuditConfig, "RECORD_INTEGRITY_KEY", "isolated-record-integrity-key-32-bytes")
+    monkeypatch.setattr(
+        AuditConfig, "RECORD_INTEGRITY_KEY", "0123456789abcdef0123456789abcdef"
+    )
     monkeypatch.setattr(AuditConfig, "RECORD_INTEGRITY_KEY_ID", "test-record-v1")
+    test_redis_url = getattr(request.module, "TEST_REDIS_URL", None)
+    if test_redis_url is not None:
+        monkeypatch.setattr(AuditConfig, "REDIS_URL", test_redis_url)
+    test_mysql_url = getattr(request.module, "TEST_MYSQL_ROOT_URL", None)
+    if test_mysql_url is not None:
+        monkeypatch.setattr(AuditConfig, "DATABASE_URL", test_mysql_url)
+        monkeypatch.setattr(AuditConfig, "WRITER_DATABASE_URL", test_mysql_url)
+        monkeypatch.setattr(AuditConfig, "READER_DATABASE_URL", test_mysql_url)
 
 
 @pytest.fixture
@@ -38,6 +48,7 @@ def audit_logger(mock_async_redis):
     with patch("audit.logger.redis") as mock_redis_module:
         mock_redis_module.from_url.return_value = mock_async_redis
         from audit.logger import AuditLogger
+
         logger = AuditLogger()
         logger.redis = mock_async_redis
         yield logger, mock_async_redis
@@ -49,6 +60,7 @@ def stream_reader(mock_sync_redis):
     with patch("consumers.stream_reader.redis") as mock_redis_module:
         mock_redis_module.from_url.return_value = mock_sync_redis
         from consumers.stream_reader import StreamReader
+
         reader = StreamReader()
         reader.redis = mock_sync_redis
         yield reader, mock_sync_redis

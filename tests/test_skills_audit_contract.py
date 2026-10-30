@@ -152,8 +152,10 @@ def test_activation_requires_approved_contract_and_independent_keys(monkeypatch)
 
 @pytest.mark.parametrize("tenant", ["tenant-a", "７", "", "1" * 256, "042", 42])
 def test_skills_event_requires_opaque_ascii_decimal_tenant(tenant):
+    payload = skills_event().model_dump(mode="json")
+    payload["organization_id"] = tenant
     with pytest.raises(ValidationError):
-        skills_event(organization_id=tenant)
+        SkillsAuditEventV1.model_validate(payload)
 
 
 @pytest.mark.parametrize("reason", ["access granted", "Bearer x", "token=abc"])

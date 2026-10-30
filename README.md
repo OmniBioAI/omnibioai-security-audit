@@ -183,6 +183,26 @@ Live-backend integration tests are opt-in and must be reported separately from
 the coverage percentage. They must only run against explicitly configured,
 isolated test Redis/MySQL endpoints, never production Redis or MySQL.
 
+To run every real-backend test without skips, provision disposable MySQL 8.0
+and Redis 7 containers published only on `127.0.0.1:33306` and
+`127.0.0.1:36379`, respectively. Install the MySQL client tools (`mysql` and
+`mysqldump`) for backup/restore tests. The tests refuse the production MySQL
+3306 and Redis 6380 ports, create throwaway databases/streams, and remove
+their test data during teardown. Configure all three explicit endpoints:
+
+```bash
+export B0_TEST_MYSQL_ROOT_URL='mysql+pymysql://root:<disposable-container-password>@127.0.0.1:33306/mysql'
+export B0_TEST_ISOLATION_MYSQL_URL="$B0_TEST_MYSQL_ROOT_URL"
+export B0_TEST_REDIS_URL='redis://127.0.0.1:36379/0'
+pytest -q
+```
+
+Replace the MySQL password placeholder with the disposable container's
+test-only credential. Do not point these variables at a shared or production
+service. Real-backend test writes use the autouse `test_audit_record_integrity_key`
+fixture, which monkeypatches `AuditConfig` with deterministic test-only 256-bit
+key material and a test key ID; no production credentials are needed.
+
 ## Current implementation status
 
 SAT-1 and SAT-3/SAT-4 are merged in the current main architecture: the tenant
