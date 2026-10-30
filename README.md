@@ -149,8 +149,15 @@ authorization and filtering, safe metadata, source semantics, migrations, SQL
 persistence, stream processing, and worker recovery. Run:
 
 ```bash
+python3.11 -m venv .venv
+. .venv/bin/activate
+python -m pip install -e ".[test]"
 pytest -q
 ```
+
+The worker and API images install this same package. Release builds attach the
+full reviewed commit as `org.opencontainers.image.revision`; an image whose
+revision is `unknown` is not a pinnable release artifact.
 
 The canonical coverage gate is production-source statement coverage:
 
