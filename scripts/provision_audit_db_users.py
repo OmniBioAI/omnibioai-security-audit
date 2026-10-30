@@ -7,8 +7,8 @@ never have a password embedded in a file checked into git.
 
 Creates three restricted MySQL users, idempotently:
 
-  audit_writer      -- SELECT, INSERT only on audit_events and
-                        quarantined_audit_events. Used by the consumer
+  audit_writer      -- SELECT, INSERT only on audit_events,
+                        quarantined_audit_events, and Skills receipts.
                         worker (the only runtime path that ever
                         INSERTs). No UPDATE/DELETE/DROP grant at all --
                         TRUNCATE requires the DROP privilege in MySQL,
@@ -19,7 +19,7 @@ Creates three restricted MySQL users, idempotently:
                         read-only API routes (GET /audit/events,
                         GET /audit/events/safe, GET /audit/pipeline-health).
 
-  audit_maintenance  -- SELECT, DELETE on both tables (retention
+  audit_maintenance  -- SELECT, DELETE on audit/receipt tables (retention
                         cleanup, gated further by
                         trg_*_no_delete's identity+legal-hold checks --
                         see alembic/versions/0005_retention_immutability.py)
@@ -49,6 +49,7 @@ Usage:
     AUDIT_MAINTENANCE_DB_PASSWORD=... \\
     python3 scripts/provision_audit_db_users.py
 """
+
 from __future__ import annotations
 
 import os
@@ -66,13 +67,20 @@ from sqlalchemy.engine.url import make_url
 # sys.path[0]).
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-_TABLES = ("audit_events", "quarantined_audit_events")
+_TABLES = (
+    "audit_events",
+    "quarantined_audit_events",
+    "skills_audit_receipts",
+)
 
 
 def _required_env(name: str) -> str:
     value = os.environ.get(name)
     if not value:
-        print(f"[FAIL] {name} must be set -- refusing to provision with a default/fallback password", file=sys.stderr)
+        print(
+            f"[FAIL] {name} must be set -- refusing to provision with a default/fallback password",
+            file=sys.stderr,
+        )
         sys.exit(1)
     return value
 
@@ -83,12 +91,18 @@ def _connect_admin():
     admin_url_str = os.environ.get("AUDIT_DB_ADMIN_URL", AuditConfig.DATABASE_URL)
     url = make_url(admin_url_str)
     return pymysql.connect(
-        host=url.host, port=url.port or 3306, user=url.username, password=url.password or "",
-        database=url.database, autocommit=True,
+        host=url.host,
+        port=url.port or 3306,
+        user=url.username,
+        password=url.password or "",
+        database=url.database,
+        autocommit=True,
     ), url.database
 
 
-def _create_user_and_grants(cur, database: str, user: str, password: str, grants: dict[str, tuple[str, ...]]):
+def _create_user_and_grants(
+    cur, database: str, user: str, password: str, grants: dict[str, tuple[str, ...]]
+):
     # CREATE USER passes `password` as a bound parameter, so pymysql
     # applies %-style substitution to this query string -- the literal
     # host wildcard must be escaped as %% here. The GRANT statements
@@ -97,11 +111,16 @@ def _create_user_and_grants(cur, database: str, user: str, password: str, grants
     # an earlier draft of this script, empirically did) grant to the
     # wrong, nonexistent account pattern '...'@'%%' -- caught only by
     # actually running this against a real server, not by inspection.
-    cur.execute(f"CREATE USER IF NOT EXISTS '{user}'@'%%' IDENTIFIED BY %s", (password,))
+    cur.execute(
+        f"CREATE USER IF NOT EXISTS '{user}'@'%%' IDENTIFIED BY %s", (password,)
+    )
     for table, privileges in grants.items():
         priv_list = ", ".join(privileges)
         cur.execute(f"GRANT {priv_list} ON `{database}`.`{table}` TO '{user}'@'%'")
-    print(f"[OK] provisioned '{user}'@'%' with: " + ", ".join(f"{t}({','.join(p)})" for t, p in grants.items()))
+    print(
+        f"[OK] provisioned '{user}'@'%' with: "
+        + ", ".join(f"{t}({','.join(p)})" for t, p in grants.items())
+    )
 
 
 def main() -> int:
@@ -114,18 +133,28 @@ def main() -> int:
         cur = conn.cursor()
 
         _create_user_and_grants(
-            cur, database, "audit_writer", writer_pw,
+            cur,
+            database,
+            "audit_writer",
+            writer_pw,
             {t: ("SELECT", "INSERT") for t in _TABLES},
         )
         _create_user_and_grants(
-            cur, database, "audit_reader", reader_pw,
+            cur,
+            database,
+            "audit_reader",
+            reader_pw,
             {t: ("SELECT",) for t in _TABLES},
         )
         _create_user_and_grants(
-            cur, database, "audit_maintenance", maintenance_pw,
+            cur,
+            database,
+            "audit_maintenance",
+            maintenance_pw,
             {
                 "audit_events": ("SELECT", "DELETE"),
                 "quarantined_audit_events": ("SELECT", "DELETE"),
+                "skills_audit_receipts": ("SELECT", "DELETE"),
                 "audit_legal_holds": ("SELECT", "INSERT", "DELETE"),
             },
         )

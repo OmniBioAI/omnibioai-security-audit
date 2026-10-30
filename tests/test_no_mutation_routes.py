@@ -44,6 +44,10 @@ def test_every_route_is_get_only():
     # signed audit event through AuditLogger.log() (the same producer
     # path every other service uses), not a direct database write --
     # see api/routes_audit.py.
-    non_get_routes = [(p, m) for p, m in non_get_routes if p != "/audit/test"]
+    non_get_routes = [
+        (p, m)
+        for p, m in non_get_routes
+        if p not in {"/audit/test", "/audit/receipts"}
+    ]
 
     assert not non_get_routes, f"unexpected non-GET route(s): {non_get_routes}"

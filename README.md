@@ -201,6 +201,32 @@ producer propagation is closed for the confirmed producer set described below.
 - Additional sinks, alerting, and operational retention policy are outside
   this merged query contract.
 
+## Skills durable receipts
+
+The optional writer at `/audit/receipts` stores the approved Skills event and a
+signed durable receipt in one SQL transaction. SDK events use
+`skills-audit/v1` and receive the full tenant-bound Ed25519 receipt. The
+Policy Engine compatibility envelope receives its exact five-field receipt
+projection. `GET /audit/receipts/{event_id}` is tenant-scoped and requires the
+receipt-read workload scope; `GET /audit/receipts/health` reports durable-store
+health only for an authenticated writer.
+
+The feature defaults off. Enabling it requires `SKILLS_SECURITY_AUDIT_LIVE=true`,
+`SKILLS_SECURITY_AUDIT_KILL_SWITCH=false`, the three versioned approval
+references in `docs/skills-integration/CONTRACT_APPROVAL.md`,
+`AUDIT_RETENTION_DAYS>=90`, an injected base64url Ed25519 private seed and key
+ID, a separate principal pseudonymization key, and a host-provided
+`app.state.skills_workload_verifier`. That verifier must enforce
+`audit.events.write:skills` or `audit.receipts.read:skills` and return the
+verified opaque decimal tenant string. No verifier is configured by default,
+and all missing or invalid configuration fails closed.
+
+The endpoint accepts events up to 16 KiB. It rejects unknown fields and
+non-decimal tenant IDs, pseudonymizes principals before persistence, binds the
+idempotency key to `event_id`, and signs durable receipts with the selected
+key ID. Detailed schemas, key rotation, retention, and the availability SLO
+are in [`docs/skills-integration`](docs/skills-integration/CONTRACT_APPROVAL.md).
+
 ## SAT-2 producer rollout status
 
 SAT-2 propagation is complete for the confirmed Security Audit producers:

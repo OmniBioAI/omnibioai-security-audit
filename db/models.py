@@ -65,7 +65,12 @@ class AuditEventRecord(Base):
     integrity_key_id = Column(String(64), nullable=True)
 
     __table_args__ = (
-        Index("ix_audit_events_org_timestamp_event", "organization_id", "timestamp", "event_id"),
+        Index(
+            "ix_audit_events_org_timestamp_event",
+            "organization_id",
+            "timestamp",
+            "event_id",
+        ),
     )
 
 
@@ -144,5 +149,32 @@ class AuditLegalHold(Base):
     record_table = Column(String(32), primary_key=True)
     record_key = Column(String(64), primary_key=True)  # event_id or stream_message_id
     held_at = Column(DateTime, server_default=func.now(), nullable=False)
-    held_by = Column(String(255), nullable=True)  # operational identifier (e.g. a case/ticket reference) -- never PHI
+    held_by = Column(
+        String(255), nullable=True
+    )  # operational identifier (e.g. a case/ticket reference) -- never PHI
     reason = Column(String(255), nullable=True)  # short, safe description only
+
+
+class SkillsAuditReceiptRecord(Base):
+    """Immutable durable-receipt and idempotency evidence for Skills events."""
+
+    __tablename__ = "skills_audit_receipts"
+
+    event_id = Column(String(64), primary_key=True)
+    receipt_id = Column(String(80), nullable=False, unique=True)
+    schema_version = Column(String(32), nullable=False)
+    organization_id = Column(String(255), nullable=False)
+    event_digest = Column(String(64), nullable=False)
+    durable_at = Column(DateTime, nullable=False)
+    sink_partition = Column(String(320), nullable=False)
+    key_id = Column(String(64), nullable=False)
+    signature = Column(String(128), nullable=False)
+
+    __table_args__ = (
+        Index(
+            "ix_skills_audit_receipts_org_durable_event",
+            "organization_id",
+            "durable_at",
+            "event_id",
+        ),
+    )

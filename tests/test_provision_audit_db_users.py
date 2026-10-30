@@ -8,6 +8,7 @@ grants it claims).
 
 Developer: Manish Kumar <manish@omnibioai.org>
 """
+
 from __future__ import annotations
 
 import runpy
@@ -46,43 +47,61 @@ def test_required_env_exits_when_unset(monkeypatch, capsys):
 
 def test_connect_admin_uses_audit_db_admin_url_when_set(monkeypatch):
     """Parse AUDIT_DB_ADMIN_URL and connect with its host/port/user/password/database."""
-    monkeypatch.setenv("AUDIT_DB_ADMIN_URL", "mysql+pymysql://root:rootpw@dbhost:3307/omnibioai_audit")
+    monkeypatch.setenv(
+        "AUDIT_DB_ADMIN_URL", "mysql+pymysql://root:rootpw@dbhost:3307/omnibioai_audit"
+    )
     mock_connect = MagicMock()
     with patch("pymysql.connect", mock_connect):
         _conn, database = padu._connect_admin()
 
     assert database == "omnibioai_audit"
     mock_connect.assert_called_once_with(
-        host="dbhost", port=3307, user="root", password="rootpw",
-        database="omnibioai_audit", autocommit=True,
+        host="dbhost",
+        port=3307,
+        user="root",
+        password="rootpw",
+        database="omnibioai_audit",
+        autocommit=True,
     )
 
 
 def test_connect_admin_falls_back_to_audit_config_database_url(monkeypatch):
     """Fall back to AuditConfig.DATABASE_URL when AUDIT_DB_ADMIN_URL is unset."""
     monkeypatch.delenv("AUDIT_DB_ADMIN_URL", raising=False)
-    monkeypatch.setenv("AUDIT_DATABASE_URL", "mysql+pymysql://root:root@localhost:3306/omnibioai_audit")
+    monkeypatch.setenv(
+        "AUDIT_DATABASE_URL", "mysql+pymysql://root:root@localhost:3306/omnibioai_audit"
+    )
     mock_connect = MagicMock()
     with patch("pymysql.connect", mock_connect):
         _conn, database = padu._connect_admin()
 
     assert database == "omnibioai_audit"
     mock_connect.assert_called_once_with(
-        host="localhost", port=3306, user="root", password="root",
-        database="omnibioai_audit", autocommit=True,
+        host="localhost",
+        port=3306,
+        user="root",
+        password="root",
+        database="omnibioai_audit",
+        autocommit=True,
     )
 
 
 def test_connect_admin_defaults_port_and_empty_password(monkeypatch):
     """Default to port 3306 and an empty password when the admin URL omits them."""
-    monkeypatch.setenv("AUDIT_DB_ADMIN_URL", "mysql+pymysql://root@dbhost/omnibioai_audit")
+    monkeypatch.setenv(
+        "AUDIT_DB_ADMIN_URL", "mysql+pymysql://root@dbhost/omnibioai_audit"
+    )
     mock_connect = MagicMock()
     with patch("pymysql.connect", mock_connect):
         padu._connect_admin()
 
     mock_connect.assert_called_once_with(
-        host="dbhost", port=3306, user="root", password="",
-        database="omnibioai_audit", autocommit=True,
+        host="dbhost",
+        port=3306,
+        user="root",
+        password="",
+        database="omnibioai_audit",
+        autocommit=True,
     )
 
 
@@ -96,15 +115,32 @@ def test_create_user_and_grants_issues_create_user_and_one_grant_per_table(capsy
     cur = MagicMock()
 
     padu._create_user_and_grants(
-        cur, "omnibioai_audit", "audit_writer", "pw123",
-        {"audit_events": ("SELECT", "INSERT"), "quarantined_audit_events": ("SELECT", "INSERT")},
+        cur,
+        "omnibioai_audit",
+        "audit_writer",
+        "pw123",
+        {
+            "audit_events": ("SELECT", "INSERT"),
+            "quarantined_audit_events": ("SELECT", "INSERT"),
+            "skills_audit_receipts": ("SELECT", "INSERT"),
+        },
     )
 
     calls = cur.execute.call_args_list
     assert "CREATE USER IF NOT EXISTS 'audit_writer'@'%%'" in calls[0].args[0]
     assert calls[0].args[1] == ("pw123",)
-    assert "GRANT SELECT, INSERT ON `omnibioai_audit`.`audit_events` TO 'audit_writer'@'%'" == calls[1].args[0]
-    assert "GRANT SELECT, INSERT ON `omnibioai_audit`.`quarantined_audit_events` TO 'audit_writer'@'%'" == calls[2].args[0]
+    assert (
+        "GRANT SELECT, INSERT ON `omnibioai_audit`.`audit_events` TO 'audit_writer'@'%'"
+        == calls[1].args[0]
+    )
+    assert (
+        "GRANT SELECT, INSERT ON `omnibioai_audit`.`quarantined_audit_events` TO 'audit_writer'@'%'"
+        == calls[2].args[0]
+    )
+    assert (
+        "GRANT SELECT, INSERT ON `omnibioai_audit`.`skills_audit_receipts` TO 'audit_writer'@'%'"
+        == calls[3].args[0]
+    )
     out = capsys.readouterr().out
     assert "[OK] provisioned 'audit_writer'@'%'" in out
     assert "pw123" not in out  # never echo the password
@@ -119,7 +155,9 @@ def _set_all_passwords(monkeypatch):
     monkeypatch.setenv("AUDIT_WRITER_DB_PASSWORD", "writer-pw")
     monkeypatch.setenv("AUDIT_READER_DB_PASSWORD", "reader-pw")
     monkeypatch.setenv("AUDIT_MAINTENANCE_DB_PASSWORD", "maint-pw")
-    monkeypatch.setenv("AUDIT_DB_ADMIN_URL", "mysql+pymysql://root:root@localhost:3306/omnibioai_audit")
+    monkeypatch.setenv(
+        "AUDIT_DB_ADMIN_URL", "mysql+pymysql://root:root@localhost:3306/omnibioai_audit"
+    )
 
 
 def test_main_exits_one_when_a_required_password_is_missing(monkeypatch, capsys):
@@ -158,15 +196,18 @@ def test_main_provisions_all_three_users_and_flushes_privileges(monkeypatch, cap
 
     # audit_maintenance is the only one of the three with a grant on audit_legal_holds.
     maintenance_calls = [
-        c.args[0] for c in mock_cur.execute.call_args_list
+        c.args[0]
+        for c in mock_cur.execute.call_args_list
         if "audit_maintenance" in c.args[0] and c.args[0].startswith("GRANT")
     ]
     assert any("audit_legal_holds" in c for c in maintenance_calls)
     assert all("DELETE" in c or "audit_legal_holds" in c for c in maintenance_calls)
     # Neither audit_writer nor audit_reader ever receives a DELETE grant.
     writer_reader_calls = [
-        c.args[0] for c in mock_cur.execute.call_args_list
-        if c.args[0].startswith("GRANT") and ("audit_writer" in c.args[0] or "audit_reader" in c.args[0])
+        c.args[0]
+        for c in mock_cur.execute.call_args_list
+        if c.args[0].startswith("GRANT")
+        and ("audit_writer" in c.args[0] or "audit_reader" in c.args[0])
     ]
     assert all("DELETE" not in c for c in writer_reader_calls)
 
@@ -195,7 +236,9 @@ def test_dunder_main_exits_with_mains_return_code(monkeypatch):
     import sys
 
     monkeypatch.setattr(sys, "argv", ["provision_audit_db_users.py"])
-    monkeypatch.delenv("AUDIT_WRITER_DB_PASSWORD", raising=False)  # cheapest deterministic path: _required_env's own sys.exit(1)
+    monkeypatch.delenv(
+        "AUDIT_WRITER_DB_PASSWORD", raising=False
+    )  # cheapest deterministic path: _required_env's own sys.exit(1)
     monkeypatch.delenv("AUDIT_READER_DB_PASSWORD", raising=False)
     monkeypatch.delenv("AUDIT_MAINTENANCE_DB_PASSWORD", raising=False)
 

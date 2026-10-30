@@ -34,6 +34,15 @@ reader_engine = create_engine(AuditConfig.READER_DATABASE_URL, pool_pre_ping=Tru
 ReaderSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=reader_engine)
 
 
+def get_writer_db():
+    """Short-lived writer session for approved durable audit receipt routes."""
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+
 def get_db():
     """Read-only DB session for API routes. Kept as `get_db` (not
     renamed to `get_reader_db`) so every existing route/test that

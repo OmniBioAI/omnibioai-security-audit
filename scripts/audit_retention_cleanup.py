@@ -42,12 +42,13 @@ Usage:
     AUDIT_MAINTENANCE_DATABASE_URL=... AUDIT_RETENTION_DAYS=90 \\
     python3 scripts/audit_retention_cleanup.py --execute
 """
+
 from __future__ import annotations
 
 import argparse
 import os
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -55,15 +56,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from sqlalchemy import create_engine, text
 
 from audit.security_alerts import emit_security_alert
+from audit.skills_contract import MINIMUM_RETENTION_DAYS
 
 _TABLES = (
     ("audit_events", "event_id", "timestamp"),
     ("quarantined_audit_events", "stream_message_id", "quarantined_at"),
+    ("skills_audit_receipts", "event_id", "durable_at"),
 )
 
 
 def _cutoff(retention_days: int) -> datetime:
-    return datetime.now(timezone.utc) - timedelta(days=retention_days)
+    return datetime.now(UTC) - timedelta(days=retention_days)
 
 
 def _write_status_file(mode: str, overall_ok: bool, results: dict) -> None:
@@ -74,8 +77,10 @@ def _write_status_file(mode: str, overall_ok: bool, results: dict) -> None:
     if not status_dir:
         return
     path = Path(status_dir) / "audit-retention-run.env"
-    now = datetime.now(timezone.utc).isoformat()
-    total_deleted = sum(r.get("count", 0) for r in results.values() if r.get("status") == "success")
+    now = datetime.now(UTC).isoformat()
+    total_deleted = sum(
+        r.get("count", 0) for r in results.values() if r.get("status") == "success"
+    )
     lines = [
         f"LAST_RETENTION_RUN_TS={now}",
         f"LAST_RETENTION_RUN_MODE={mode}",
@@ -87,7 +92,20 @@ def _write_status_file(mode: str, overall_ok: bool, results: dict) -> None:
     tmp_path.replace(path)
 
 
-def _count_eligible(conn, table: str, key_col: str, date_col: str, cutoff: datetime) -> int:
+def _count_eligible(
+    conn, table: str, key_col: str, date_col: str, cutoff: datetime
+) -> int:
+    linked_event_hold = (
+        """
+              AND NOT EXISTS (
+                  SELECT 1 FROM audit_legal_holds event_hold
+                  WHERE event_hold.record_table = 'audit_events'
+                    AND event_hold.record_key = t.event_id
+              )
+        """
+        if table == "skills_audit_receipts"
+        else ""
+    )
     result = conn.execute(
         text(f"""
             SELECT COUNT(*) FROM {table} t
@@ -96,13 +114,27 @@ def _count_eligible(conn, table: str, key_col: str, date_col: str, cutoff: datet
                   SELECT 1 FROM audit_legal_holds h
                   WHERE h.record_table = :table_name AND h.record_key = t.{key_col}
               )
+              {linked_event_hold}
         """),
         {"cutoff": cutoff, "table_name": table},
     )
     return result.scalar_one()
 
 
-def _delete_eligible(conn, table: str, key_col: str, date_col: str, cutoff: datetime) -> int:
+def _delete_eligible(
+    conn, table: str, key_col: str, date_col: str, cutoff: datetime
+) -> int:
+    linked_event_hold = (
+        """
+              AND NOT EXISTS (
+                  SELECT 1 FROM audit_legal_holds event_hold
+                  WHERE event_hold.record_table = 'audit_events'
+                    AND event_hold.record_key = skills_audit_receipts.event_id
+              )
+        """
+        if table == "skills_audit_receipts"
+        else ""
+    )
     result = conn.execute(
         text(f"""
             DELETE FROM {table}
@@ -111,6 +143,7 @@ def _delete_eligible(conn, table: str, key_col: str, date_col: str, cutoff: date
                   SELECT 1 FROM audit_legal_holds h
                   WHERE h.record_table = :table_name AND h.record_key = {table}.{key_col}
               )
+              {linked_event_hold}
         """),
         {"cutoff": cutoff, "table_name": table},
     )
@@ -119,9 +152,12 @@ def _delete_eligible(conn, table: str, key_col: str, date_col: str, cutoff: date
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--execute", action="store_true", help="actually delete (default: dry-run only)")
     parser.add_argument(
-        "--dry-run", action="store_true",
+        "--execute", action="store_true", help="actually delete (default: dry-run only)"
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
         help="explicit no-op flag matching the default behavior (report only, delete nothing) -- for clarity in scripts/cron entries that want to say so explicitly",
     )
     args = parser.parse_args(argv)
@@ -141,7 +177,18 @@ def main(argv: list[str] | None = None) -> int:
         if retention_days <= 0:
             raise ValueError
     except ValueError:
-        print(f"[FAIL] AUDIT_RETENTION_DAYS must be a positive integer, got {retention_days_raw!r}", file=sys.stderr)
+        print(
+            f"[FAIL] AUDIT_RETENTION_DAYS must be a positive integer, got {retention_days_raw!r}",
+            file=sys.stderr,
+        )
+        return 1
+
+    if retention_days < MINIMUM_RETENTION_DAYS:
+        print(
+            f"[FAIL] AUDIT_RETENTION_DAYS must be at least {MINIMUM_RETENTION_DAYS} "
+            "days while Skills durable receipts are supported.",
+            file=sys.stderr,
+        )
         return 1
 
     maintenance_url = os.environ.get("AUDIT_MAINTENANCE_DATABASE_URL")
@@ -159,7 +206,9 @@ def main(argv: list[str] | None = None) -> int:
     engine = create_engine(maintenance_url)
 
     print(f"[INFO] retention cutoff: {cutoff.isoformat()} ({retention_days} days)")
-    print(f"[INFO] mode: {'EXECUTE' if args.execute else 'DRY-RUN (pass --execute to actually delete)'}")
+    print(
+        f"[INFO] mode: {'EXECUTE' if args.execute else 'DRY-RUN (pass --execute to actually delete)'}"
+    )
 
     results: dict[str, dict] = {}
     overall_ok = True
@@ -174,7 +223,9 @@ def main(argv: list[str] | None = None) -> int:
             with engine.connect() as conn:
                 eligible = _count_eligible(conn, table, key_col, date_col, cutoff)
                 if not args.execute:
-                    print(f"[DRY-RUN] {table}: {eligible} row(s) would be deleted (excluding legal holds)")
+                    print(
+                        f"[DRY-RUN] {table}: {eligible} row(s) would be deleted (excluding legal holds)"
+                    )
                     results[table] = {"status": "dry_run", "count": eligible}
                     continue
 
@@ -194,13 +245,20 @@ def main(argv: list[str] | None = None) -> int:
                         f"[WARN] {table}: expected to delete {eligible}, actually deleted {deleted} "
                         f"-- treat as a partial result, investigate the discrepancy",
                     )
-                    results[table] = {"status": "partial", "expected": eligible, "actual": deleted}
+                    results[table] = {
+                        "status": "partial",
+                        "expected": eligible,
+                        "actual": deleted,
+                    }
                     overall_ok = False
                 else:
                     print(f"[OK] {table}: deleted {deleted} row(s)")
                     results[table] = {"status": "success", "count": deleted}
         except Exception as e:  # noqa: BLE001 -- one table's failure must be reported, not silently swallow the other table's result
-            print(f"[FAIL] {table}: retention operation failed: {type(e).__name__}: {e}", file=sys.stderr)
+            print(
+                f"[FAIL] {table}: retention operation failed: {type(e).__name__}: {e}",
+                file=sys.stderr,
+            )
             results[table] = {"status": "failed", "error": type(e).__name__}
             overall_ok = False
 
@@ -219,12 +277,21 @@ def main(argv: list[str] | None = None) -> int:
             severity="critical" if failed_tables else "warning",
             component="retention-cleanup",
             message="Audit retention cleanup completed with partial or failed results",
-            metadata={"mode": mode, "results": {t: r.get("status") for t, r in results.items()}},
+            metadata={
+                "mode": mode,
+                "results": {t: r.get("status") for t, r in results.items()},
+            },
         )
-        print("[FAIL] retention run completed with partial/failed results -- see above", file=sys.stderr)
+        print(
+            "[FAIL] retention run completed with partial/failed results -- see above",
+            file=sys.stderr,
+        )
         return 1
 
-    print("[OK] retention run completed" + (" (dry-run, nothing deleted)" if not args.execute else ""))
+    print(
+        "[OK] retention run completed"
+        + (" (dry-run, nothing deleted)" if not args.execute else "")
+    )
     return 0
 
 

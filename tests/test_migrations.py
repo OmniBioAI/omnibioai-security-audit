@@ -4,6 +4,7 @@ MySQL instance. Mirrors omnibioai-auth/tests/test_migrations.py's pattern.
 
 Developer: Manish Kumar <manish@omnibioai.org>
 """
+
 from pathlib import Path
 
 from alembic.config import Config
@@ -14,11 +15,24 @@ from alembic import command
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 EXPECTED_COLUMNS = {
-    "event_id", "timestamp", "service", "event_type", "user_id", "action",
-    "resource", "decision", "reason", "trace_id", "context", "created_at",
+    "event_id",
+    "timestamp",
+    "service",
+    "event_type",
+    "user_id",
+    "action",
+    "resource",
+    "decision",
+    "reason",
+    "trace_id",
+    "context",
+    "created_at",
     "integrity_status",
-    "organization_id", "tenant_scope",
+    "organization_id",
+    "tenant_scope",
 }
+
+EXPECTED_TABLES = {"skills_audit_receipts"}
 
 
 def _alembic_config(db_url: str) -> Config:
@@ -44,6 +58,7 @@ def test_upgrade_head_creates_audit_events_table(tmp_path):
     engine = create_engine(db_url)
     inspector = inspect(engine)
     assert "audit_events" in inspector.get_table_names()
+    assert EXPECTED_TABLES <= set(inspector.get_table_names())
 
     columns = {c["name"] for c in inspector.get_columns("audit_events")}
     assert EXPECTED_COLUMNS <= columns
@@ -80,6 +95,7 @@ def test_downgrade_drops_audit_events_table(tmp_path):
 # ---------------------------------------------------------------------------
 # PR2: 0002_integrity_status
 # ---------------------------------------------------------------------------
+
 
 def test_integrity_status_column_exists_after_upgrade(tmp_path):
     """Add a non-nullable integrity_status column at head."""
@@ -119,11 +135,21 @@ def test_legacy_rows_are_unknown_after_tenant_migration(tmp_path):
     engine = create_engine(f"sqlite:///{db_file}")
     with engine.begin() as conn:
         from sqlalchemy import text
-        conn.execute(text("INSERT INTO audit_events (event_id, timestamp, service, event_type, action, context) VALUES ('legacy', '2026-01-01 00:00:00', 'svc', 'test', '', '{}')"))
+
+        conn.execute(
+            text(
+                "INSERT INTO audit_events (event_id, timestamp, service, event_type, action, context) VALUES ('legacy', '2026-01-01 00:00:00', 'svc', 'test', '', '{}')"
+            )
+        )
     command.upgrade(cfg, "head")
     with engine.begin() as conn:
         from sqlalchemy import text
-        row = conn.execute(text("SELECT organization_id, tenant_scope FROM audit_events WHERE event_id='legacy'")).fetchone()
+
+        row = conn.execute(
+            text(
+                "SELECT organization_id, tenant_scope FROM audit_events WHERE event_id='legacy'"
+            )
+        ).fetchone()
     assert row == (None, "unknown")
 
 
@@ -156,7 +182,9 @@ def test_existing_rows_backfill_to_unsigned_on_upgrade(tmp_path):
         from sqlalchemy import text
 
         row = conn.execute(
-            text("SELECT integrity_status FROM audit_events WHERE event_id = 'pre-0002-evt'")
+            text(
+                "SELECT integrity_status FROM audit_events WHERE event_id = 'pre-0002-evt'"
+            )
         ).fetchone()
     assert row is not None
     assert row[0] == "unsigned"
@@ -172,21 +200,26 @@ def test_integrity_key_id_migration_is_additive_and_preserves_legacy_hash(tmp_pa
 
     legacy_hash = "a" * 64
     with engine.begin() as conn:
-        conn.execute(text(
-            "INSERT INTO audit_events (event_id, timestamp, service, event_type, action, context, "
-            "integrity_status, record_integrity_hash) VALUES "
-            "('legacy-key-id-row', '2026-01-01 00:00:00', 'svc', 'test', '', '{}', 'unsigned', :hash)"
-        ), {"hash": legacy_hash})
+        conn.execute(
+            text(
+                "INSERT INTO audit_events (event_id, timestamp, service, event_type, action, context, "
+                "integrity_status, record_integrity_hash) VALUES "
+                "('legacy-key-id-row', '2026-01-01 00:00:00', 'svc', 'test', '', '{}', 'unsigned', :hash)"
+            ),
+            {"hash": legacy_hash},
+        )
     command.upgrade(cfg, "head")
     inspector = inspect(engine)
     for table in ("audit_events", "quarantined_audit_events"):
         cols = {column["name"]: column for column in inspector.get_columns(table)}
         assert cols["integrity_key_id"]["nullable"] is True
     with engine.connect() as conn:
-        row = conn.execute(text(
-            "SELECT record_integrity_hash, integrity_key_id FROM audit_events "
-            "WHERE event_id='legacy-key-id-row'"
-        )).one()
+        row = conn.execute(
+            text(
+                "SELECT record_integrity_hash, integrity_key_id FROM audit_events "
+                "WHERE event_id='legacy-key-id-row'"
+            )
+        ).one()
     assert row == (legacy_hash, None)
     engine.dispose()
 
@@ -200,16 +233,21 @@ def test_integrity_key_id_downgrade_refuses_to_drop_live_key_metadata(tmp_path):
     from sqlalchemy import text
 
     with engine.begin() as conn:
-        conn.execute(text(
-            "INSERT INTO audit_events (event_id, timestamp, service, event_type, action, context, "
-            "integrity_status, record_integrity_hash, integrity_key_id) VALUES "
-            "('versioned-row', '2026-01-01 00:00:00', 'svc', 'test', '', '{}', 'unsigned', :hash, 'v2')"
-        ), {"hash": "b" * 64})
+        conn.execute(
+            text(
+                "INSERT INTO audit_events (event_id, timestamp, service, event_type, action, context, "
+                "integrity_status, record_integrity_hash, integrity_key_id) VALUES "
+                "('versioned-row', '2026-01-01 00:00:00', 'svc', 'test', '', '{}', 'unsigned', :hash, 'v2')"
+            ),
+            {"hash": "b" * 64},
+        )
     import pytest
 
     with pytest.raises(RuntimeError, match="cannot downgrade while audit_events"):
         command.downgrade(cfg, "0005_retention_immutability")
-    assert "integrity_key_id" in {c["name"] for c in inspect(engine).get_columns("audit_events")}
+    assert "integrity_key_id" in {
+        c["name"] for c in inspect(engine).get_columns("audit_events")
+    }
     engine.dispose()
 
 

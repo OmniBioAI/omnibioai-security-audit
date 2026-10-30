@@ -1,0 +1,30 @@
+{
+  "event": {
+    "action": "skills.validate",
+    "catalog_revision": null,
+    "correlation_id": "corr-1",
+    "decision_id": "decision-1",
+    "error_code": null,
+    "event_id": "4214ab3799a580b6d1fc65ad62b2e359be86bd14ed84811b2f4add5a6a90ebd1",
+    "event_type": "skill_plan_validated",
+    "organization_id": "7",
+    "outcome": "success",
+    "plan_fingerprint": null,
+    "principal_id": "principal-42",
+    "reason_code": null,
+    "resource": "skill:org.example.tool@1.0.0",
+    "schema_version": "skills-audit/v1",
+    "timestamp": "2026-10-29T12:00:00Z"
+  },
+  "receipt": {
+    "accepted_schema_version": "skills-audit/v1",
+    "durable": true,
+    "durable_at": "2026-10-29T12:00:00Z",
+    "event_id": "4214ab3799a580b6d1fc65ad62b2e359be86bd14ed84811b2f4add5a6a90ebd1",
+    "key_id": "skills-receipt-test-v1",
+    "organization_id": "7",
+    "receipt_id": "receipt-264a40ae898ee24bb4ca7770947ef9b43a7f4fff951dda57c6374da983feddbd",
+    "signature": "ed25519:OgkBRUsRy82BDMiQQiIh9YkfDMd3MlIcRYn20vn4kAIBnd6Thw_sGc86Say55Ta_pkQ2rbghlNBc3joYZu4CBQ",
+    "sink_partition": "skills-7"
+  }
+}
