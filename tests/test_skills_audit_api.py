@@ -70,8 +70,8 @@ def test_receipt_endpoints_return_sdk_and_policy_wire_contracts():
     service = DurableReceiptService(store=MemoryStore(), signer=signer)
     app.dependency_overrides[get_live_receipt_service] = lambda: service
     app.dependency_overrides[get_live_receipt_reader_service] = lambda: service
-    app.dependency_overrides[require_skills_audit_writer] = lambda: "7"
-    app.dependency_overrides[require_skills_audit_reader] = lambda: "7"
+    app.dependency_overrides[require_skills_audit_writer] = lambda: "42"
+    app.dependency_overrides[require_skills_audit_reader] = lambda: "42"
     try:
         with TestClient(app) as client:
             sdk_event = _event_payload()
@@ -89,17 +89,20 @@ def test_receipt_endpoints_return_sdk_and_policy_wire_contracts():
                 == sdk_receipt
             )
 
-            policy = policy_event().model_dump(mode="json")
+            policy = policy_event(organization_id="42").model_dump(mode="json")
             policy_response = client.post("/audit/receipts", json=policy)
             assert policy_response.status_code == 200
-            assert set(policy_response.json()) == {
-                "receipt_id",
-                "event_id",
-                "source",
-                "durable",
-                "persisted_at",
-            }
-            assert policy_response.json()["event_id"] == policy["event_id"]
+            policy_receipt = policy_response.json()
+            assert policy_receipt["event_id"] == policy["event_id"]
+            assert policy_receipt["accepted_schema_version"] == "policy-audit/v1"
+            assert signer.verify(
+                {
+                    key: value
+                    for key, value in policy_receipt.items()
+                    if key != "signature"
+                },
+                policy_receipt["signature"],
+            )
     finally:
         app.dependency_overrides.pop(get_live_receipt_service, None)
         app.dependency_overrides.pop(get_live_receipt_reader_service, None)

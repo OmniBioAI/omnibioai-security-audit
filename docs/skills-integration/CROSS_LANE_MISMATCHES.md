@@ -1,16 +1,18 @@
 # Cross-lane contract notes
 
-- Policy Engine `afdf899` emits tenancy examples such as `tenant-a`, while
-  this Security Audit contract requires the platform's canonical opaque
-  decimal tenant string. **Policy Engine should send its verified canonical
-  tenant ID** (for example, `7`). The audit endpoint rejects non-decimal IDs
-  and fails closed; it does not coerce or map tenant identifiers.
-- The Skills SDK offline fixtures use `tenant-a` for test readability. The
-  receipt fixture at `tests/fixtures/skills_audit_receipt_v1.json` uses the
-  corresponding wire-valid synthetic tenant `7`. **SDK integration fixtures
-  should use decimal strings** before end-to-end qualification.
-- Policy Engine `afdf899` publishes a five-field receipt (`receipt_id`,
-  `event_id`, `source`, `durable`, `persisted_at`) with `extra=forbid`. The SDK
-  requires a richer signed receipt. The endpoint negotiates on the event
-  schema: Policy receives its exact five-field projection; SDK receives the
-  signed, tenant-bound receipt.
+- Tenant decision (Auth `c9c997a`): tenant IDs on the wire are opaque,
+  canonical decimal strings such as `"42"`. Integers and non-canonical strings
+  such as `"042"` are rejected; the service does not coerce or normalize them.
+  Policy Engine examples such as `tenant-a` and SDK offline fixtures using
+  `tenant-a` are not valid wire IDs and must be replaced with their verified
+  canonical tenant strings before end-to-end qualification. The signed
+  Lane 1 fixture uses synthetic tenant `"42"`.
+- Receipt decision: the complete signed `DurableAuditReceiptV1` serialization
+  is canonical and authoritative. Consumers must verify Ed25519 over every
+  canonical receipt field except the detached `signature` member, using the
+  receipt's `key_id`, before projecting fields into a narrower local shape.
+  Policy Engine may continue to expose its five-field response (`receipt_id`,
+  `event_id`, `source`, `durable`, `persisted_at`) to its caller, but it must
+  verify the full signed receipt first; verifying the five-field projection is
+  not sufficient. Canonical bytes and the verification procedure are specified
+  in `CONTRACT_APPROVAL.md`.

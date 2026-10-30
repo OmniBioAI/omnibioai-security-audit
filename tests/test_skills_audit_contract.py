@@ -15,7 +15,6 @@ from audit.skills_contract import (
     DurableAuditReceiptV1,
     Ed25519ReceiptSigner,
     PolicyAuditEventV1,
-    PolicyAuditReceiptV1,
     SkillsAuditEventV1,
 )
 from db.models import AuditEventRecord, SkillsAuditReceiptRecord
@@ -151,7 +150,7 @@ def test_activation_requires_approved_contract_and_independent_keys(monkeypatch)
         SkillsAuditSettings.from_env().build_signer()
 
 
-@pytest.mark.parametrize("tenant", ["tenant-a", "７", "", "1" * 256])
+@pytest.mark.parametrize("tenant", ["tenant-a", "７", "", "1" * 256, "042", 42])
 def test_skills_event_requires_opaque_ascii_decimal_tenant(tenant):
     with pytest.raises(ValidationError):
         skills_event(organization_id=tenant)
@@ -179,6 +178,10 @@ def test_policy_compatibility_schema_matches_upstream_and_rejects_extra_context(
     event = policy_event()
     assert event.organization_id == "7"
     with pytest.raises(ValidationError):
+        policy_event(organization_id="042")
+    with pytest.raises(ValidationError):
+        policy_event(organization_id=42)
+    with pytest.raises(ValidationError):
         policy_event(context={"raw_payload": "synthetic"})
     with pytest.raises(ValidationError):
         policy_event(organization_id="tenant-a")
@@ -194,25 +197,23 @@ def test_signed_durable_receipt_is_bound_and_replay_is_idempotent():
     assert isinstance(first, DurableAuditReceiptV1)
     assert again == first
     assert service._signer.verify(first.signed_fields(), first.signature)
+    assert not service._signer.verify(
+        {"event_id": first.event_id, "organization_id": first.organization_id},
+        first.signature,
+    )
     assert len(store.records) == 1
 
 
-def test_policy_receipt_has_exact_five_field_lane3_contract():
+def test_policy_event_receives_full_signed_receipt_before_local_projection():
     event = policy_event()
     receipt = receipt_service().emit(
         event, idempotency_key=event.event_id, verified_tenant="7"
     )
-    assert isinstance(receipt, PolicyAuditReceiptV1)
-    assert set(receipt.model_dump()) == {
-        "receipt_id",
-        "event_id",
-        "source",
-        "durable",
-        "persisted_at",
-    }
+    assert isinstance(receipt, DurableAuditReceiptV1)
     assert receipt.event_id == event.event_id
-    assert receipt.source == "security-audit"
     assert receipt.durable is True
+    assert receipt.accepted_schema_version == "policy-audit/v1"
+    assert receipt_service()._signer.verify(receipt.signed_fields(), receipt.signature)
 
 
 def test_idempotency_tenant_health_and_signature_fail_closed():
@@ -286,3 +287,7 @@ def test_lane1_receipt_fixture_has_expected_wire_shape():
     assert receipt.accepted_schema_version == event.schema_version
     signer = Ed25519ReceiptSigner(private_key=SIGNING_SEED, key_id=receipt.key_id)
     assert signer.verify(receipt.signed_fields(), receipt.signature)
+    with pytest.raises(ValidationError):
+        DurableAuditReceiptV1.model_validate(
+            {**raw["receipt"], "organization_id": "042"}
+        )

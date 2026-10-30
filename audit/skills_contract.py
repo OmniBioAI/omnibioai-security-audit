@@ -7,7 +7,7 @@ import hmac
 import json
 import re
 from base64 import urlsafe_b64decode, urlsafe_b64encode
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -32,7 +32,7 @@ SkillsEventType = Literal[
     "skill_plan_validated",
 ]
 
-_TENANT = re.compile(r"^[0-9]{1,255}$")
+_TENANT = re.compile(r"^(?:0|[1-9][0-9]{0,254})$")
 _REASON_CODE = re.compile(r"^[A-Z][A-Z0-9_]{0,127}$")
 _SKILLS_ACTIONS = frozenset(
     {
@@ -195,7 +195,22 @@ class DurableAuditReceiptV1(StrictModel):
     signature: str
     durable: Literal[True] = True
 
+    @field_validator("organization_id")
+    @classmethod
+    def validate_tenant(cls, value: str) -> str:
+        if not _TENANT.fullmatch(value):
+            raise ValueError("organization_id must be a canonical decimal string")
+        return value
+
+    @field_validator("durable_at")
+    @classmethod
+    def validate_utc_timestamp(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() != UTC.utcoffset(value):
+            raise ValueError("durable_at must be a timezone-aware UTC timestamp")
+        return value.astimezone(UTC)
+
     def signed_fields(self) -> dict[str, Any]:
+        """Return every canonical receipt field covered by the detached signature."""
         return self.model_dump(mode="json", exclude={"signature"})
 
 

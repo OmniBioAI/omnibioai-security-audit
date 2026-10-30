@@ -44,6 +44,7 @@ def _verified_tenant(
         or len(tenant_id) > 255
         or not tenant_id.isascii()
         or not tenant_id.isdecimal()
+        or (tenant_id != "0" and tenant_id.startswith("0"))
     ):
         raise HTTPException(status_code=403, detail="Verified tenant is invalid")
     return tenant_id

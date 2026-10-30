@@ -24,7 +24,6 @@ from audit.skills_contract import (
     DurableAuditReceiptV1,
     Ed25519ReceiptSigner,
     PolicyAuditEventV1,
-    PolicyAuditReceiptV1,
     ReceiptSigner,
     SkillsAuditEventV1,
     event_digest,
@@ -356,7 +355,7 @@ class DurableReceiptService:
         *,
         idempotency_key: str,
         verified_tenant: str,
-    ) -> DurableAuditReceiptV1 | PolicyAuditReceiptV1:
+    ) -> DurableAuditReceiptV1:
         if not self._store.health():
             raise SkillsAuditDisabled("durable receipt store is unavailable")
         if idempotency_key != event.event_id:
@@ -371,6 +370,7 @@ class DurableReceiptService:
         durable_at = self._clock()
         if durable_at.tzinfo is None:
             raise ReceiptIntegrityError("receipt clock must include a timezone")
+        durable_at = durable_at.astimezone(UTC)
         receipt_id = (
             "receipt-"
             + hashlib.sha256(f"{schema}:{event.event_id}:{digest}".encode()).hexdigest()
@@ -414,12 +414,6 @@ class DurableReceiptService:
             full.signed_fields(), full.signature
         ):
             raise ReceiptIntegrityError("stored receipt signature is invalid")
-        if isinstance(event, PolicyAuditEventV1):
-            return PolicyAuditReceiptV1(
-                receipt_id=full.receipt_id,
-                event_id=full.event_id,
-                persisted_at=full.durable_at,
-            )
         return full
 
     def get(
@@ -451,4 +445,10 @@ class DurableReceiptService:
 
 
 def re_full_decimal(value: str) -> bool:
-    return bool(value) and len(value) <= 255 and value.isascii() and value.isdecimal()
+    return (
+        isinstance(value, str)
+        and len(value) <= 255
+        and value.isascii()
+        and value.isdecimal()
+        and (value == "0" or not value.startswith("0"))
+    )

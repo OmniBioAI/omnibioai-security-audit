@@ -205,9 +205,10 @@ producer propagation is closed for the confirmed producer set described below.
 
 The optional writer at `/audit/receipts` stores the approved Skills event and a
 signed durable receipt in one SQL transaction. SDK events use
-`skills-audit/v1` and receive the full tenant-bound Ed25519 receipt. The
-Policy Engine compatibility envelope receives its exact five-field receipt
-projection. `GET /audit/receipts/{event_id}` is tenant-scoped and requires the
+`skills-audit/v1`; Policy Engine events use `policy-audit/v1`. Both receive the
+full tenant-bound Ed25519 receipt. Consumers may project it into a local shape
+only after verifying the signature over all canonical receipt fields.
+`GET /audit/receipts/{event_id}` is tenant-scoped and requires the
 receipt-read workload scope; `GET /audit/receipts/health` reports durable-store
 health only for an authenticated writer.
 

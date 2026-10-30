@@ -5,9 +5,9 @@
     "correlation_id": "corr-1",
     "decision_id": "decision-1",
     "error_code": null,
-    "event_id": "4214ab3799a580b6d1fc65ad62b2e359be86bd14ed84811b2f4add5a6a90ebd1",
+    "event_id": "a4d6fd421307faf03e1fa490b4a7e40911130c4204b9de1f98e933d5ed2e786b",
     "event_type": "skill_plan_validated",
-    "organization_id": "7",
+    "organization_id": "42",
     "outcome": "success",
     "plan_fingerprint": null,
     "principal_id": "principal-42",
@@ -20,11 +20,11 @@
     "accepted_schema_version": "skills-audit/v1",
     "durable": true,
     "durable_at": "2026-10-29T12:00:00Z",
-    "event_id": "4214ab3799a580b6d1fc65ad62b2e359be86bd14ed84811b2f4add5a6a90ebd1",
+    "event_id": "a4d6fd421307faf03e1fa490b4a7e40911130c4204b9de1f98e933d5ed2e786b",
     "key_id": "skills-receipt-test-v1",
-    "organization_id": "7",
-    "receipt_id": "receipt-264a40ae898ee24bb4ca7770947ef9b43a7f4fff951dda57c6374da983feddbd",
-    "signature": "ed25519:OgkBRUsRy82BDMiQQiIh9YkfDMd3MlIcRYn20vn4kAIBnd6Thw_sGc86Say55Ta_pkQ2rbghlNBc3joYZu4CBQ",
-    "sink_partition": "skills-7"
+    "organization_id": "42",
+    "receipt_id": "receipt-2aecfb4bc50ada12fc0c0d7580aabdac3338c9c7a8411f52b0ee8492afb56582",
+    "signature": "ed25519:2RYaIyTyfTc9DdXrQKpEXdA0f7FsNnYIZADI0vKOWocSWtaxVkBVpQfJbut4kHW3iI-3XbZSLH2hbLwMnui-Cg",
+    "sink_partition": "skills-42"
   }
 }
