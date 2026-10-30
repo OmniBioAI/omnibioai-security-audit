@@ -9,6 +9,7 @@ Author:
 """
 
 from fastapi import APIRouter
+
 from audit.logger import AuditLogger
 
 router = APIRouter()
@@ -22,8 +23,8 @@ def health():
 
 @router.get("/audit/test")
 async def test_log():
-    from audit.models import AuditEvent
     from audit.config import AuditConfig
+    from audit.models import AuditEvent
 
     await logger.log(
         AuditEvent(
