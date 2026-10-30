@@ -29,7 +29,7 @@ import json
 import os
 import subprocess
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -53,6 +53,8 @@ except MissingTestMySQLEndpoint:
 _RUN_ID = uuid.uuid4().hex[:8]
 SOURCE_DB = f"omnibioai_audit_e3_backup_src_{_RUN_ID}"
 RESTORED_DB = f"omnibioai_audit_e3_backup_dst_{_RUN_ID}"
+TEST_RECORD_INTEGRITY_KEY = "0123456789abcdef0123456789abcdef"
+TEST_RECORD_INTEGRITY_KEY_ID = "test-record-v1"
 
 
 def _real_mysql_available():
@@ -75,8 +77,22 @@ pytestmark = pytest.mark.skipif(
 )
 
 
+@pytest.fixture(scope="module", autouse=True)
+def backup_restore_integrity_key():
+    """Keep write-time and verify-time keys stable across module DB fixtures."""
+    from audit.config import AuditConfig
+
+    patch = pytest.MonkeyPatch()
+    patch.setattr(AuditConfig, "RECORD_INTEGRITY_KEY", TEST_RECORD_INTEGRITY_KEY)
+    patch.setattr(AuditConfig, "RECORD_INTEGRITY_KEY_ID", TEST_RECORD_INTEGRITY_KEY_ID)
+    try:
+        yield TEST_RECORD_INTEGRITY_KEY
+    finally:
+        patch.undo()
+
+
 @pytest.fixture(scope="module")
-def source_db_with_data():
+def source_db_with_data(backup_restore_integrity_key):
     """Fresh throwaway DB, migrated to head, seeded with real audit
     events (via Sink), a quarantine record (via QuarantineSink), and a
     legal hold -- one of each kind of evidence this schema protects."""
@@ -106,7 +122,7 @@ def source_db_with_data():
     Session = sessionmaker(bind=engine)
     with Session() as db:
         Sink(db).write({
-            "event_id": "evt-backup-roundtrip", "timestamp": datetime.now(timezone.utc).replace(tzinfo=None),
+            "event_id": "evt-backup-roundtrip", "timestamp": datetime.now(UTC).replace(tzinfo=None),
             "service": "e3-backup-test", "event_type": "test", "action": "test_action",
             "context": {"nested": {"k": "v"}, "list": [1, 2, 3]}, "integrity_status": "unsigned",
         })
@@ -237,13 +253,14 @@ def test_restored_legal_hold_survives(restored_db):
     assert count == 1
 
 
-def test_restored_database_integrity_verification_reports_zero_tampering(restored_db):
+def test_restored_database_integrity_verification_reports_zero_tampering(
+    restored_db, backup_restore_integrity_key
+):
     """The round trip itself must never introduce false positives --
     every record that was valid before backup/restore must still verify
     as valid after."""
     from sqlalchemy.orm import sessionmaker
 
-    from audit.config import AuditConfig
     from scripts.verify_audit_integrity import (
         verify_audit_events,
         verify_quarantine_records,
@@ -252,8 +269,8 @@ def test_restored_database_integrity_verification_reports_zero_tampering(restore
     engine = create_engine(restored_db)
     Session = sessionmaker(bind=engine)
     with Session() as session:
-        event_stats = verify_audit_events(session, AuditConfig.RECORD_INTEGRITY_KEY)
-        quarantine_stats = verify_quarantine_records(session, AuditConfig.RECORD_INTEGRITY_KEY)
+        event_stats = verify_audit_events(session, backup_restore_integrity_key)
+        quarantine_stats = verify_quarantine_records(session, backup_restore_integrity_key)
 
     assert event_stats["invalid"] == []
     assert event_stats["structural"] == []
