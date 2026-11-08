@@ -13,6 +13,8 @@ ingestion, replayable delivery, durable storage, and safe administrative reads.
 
 ## Architecture
 
+![OmniBioAI Security Audit Architecture](docs/architecture/omnibioai-security-audit-architecture.png)
+
 ```mermaid
 flowchart LR
     Producers[Authoritative service producers] -->|XADD data + sig| Stream[(Redis Stream audit:events)]
