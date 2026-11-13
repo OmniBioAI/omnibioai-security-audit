@@ -15,9 +15,10 @@ RUN groupadd --system --gid 10001 omnibioai \
 
 WORKDIR /app
 
-# Install the reviewed source tree as the same Python package exercised by CI.
+# Install the reviewed source tree as the same Python package exercised by CI,
+# with every runtime dependency held to the versions in constraints.txt.
 COPY . .
-RUN pip install --no-cache-dir .
+RUN pip install --no-cache-dir -c constraints.txt .
 
 ARG VCS_REF=unknown
 ARG BUILD_VERSION=unknown

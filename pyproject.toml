@@ -10,15 +10,15 @@ readme = "README.md"
 requires-python = ">=3.11,<3.12"
 dependencies = [
   "alembic>=1.13,<2",
-  "anyio>=4.4,<4.10",
+  "anyio>=4.4,<5",
   "cryptography==46.0.3",
-  "fastapi>=0.115,<0.116",
+  "fastapi>=0.115,<1",
   "PyJWT[crypto]>=2.8",
   "pydantic>=2.10,<3",
   "pymysql",
-  "redis>=5,<6",
+  "redis>=5,<9",
   "sqlalchemy>=2,<3",
-  "uvicorn>=0.34,<0.35",
+  "uvicorn>=0.34,<1",
 ]
 
 [project.optional-dependencies]

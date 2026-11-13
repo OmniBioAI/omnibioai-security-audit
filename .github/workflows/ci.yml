@@ -29,7 +29,8 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[test]"
+          # Same runtime versions as the worker image (Dockerfile.worker).
+          pip install -c constraints.txt -e ".[test]"
 
       # Scoped to Python files actually changed by this push/PR, not
       # `ruff check .` repo-wide -- this repo carries 107 pre-existing
