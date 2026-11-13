@@ -15,12 +15,15 @@ RUN groupadd --system --gid 10001 omnibioai \
 
 WORKDIR /app
 
-# Python dependencies
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
-# Application source
+# Install the reviewed source tree as the same Python package exercised by CI.
 COPY . .
+RUN pip install --no-cache-dir .
+
+ARG VCS_REF=unknown
+ARG BUILD_VERSION=unknown
+LABEL org.opencontainers.image.source="https://github.com/OmniBioAI/omnibioai-security-audit" \
+      org.opencontainers.image.revision="${VCS_REF}" \
+      org.opencontainers.image.version="${BUILD_VERSION}"
 
 RUN chown -R omnibioai:omnibioai /app /home/omnibioai
 USER omnibioai

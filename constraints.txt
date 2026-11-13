@@ -1,0 +1,31 @@
+# Runtime constraints for the audit worker image (Dockerfile.worker).
+# Snapshot of `pip freeze` from the worker image running on 2026-11-12
+# (Python 3.11.17), so a release build installs exactly those versions.
+# Packaging tools (pip, setuptools, wheel) are left to the base image.
+# Regenerate from a running worker, then rebuild and rerun the build-contract check:
+#   docker exec <worker> pip freeze | grep -viE '^(pip|setuptools|wheel)=='
+alembic==1.20.0
+annotated-doc==0.0.5
+annotated-types==0.8.0
+anyio==4.15.1
+cffi==2.1.1
+click==8.5.0
+cryptography==46.0.3
+fastapi==0.143.0
+h11==0.16.0
+idna==3.20
+Mako==1.4.3
+MarkupSafe==3.0.4
+opentelemetry-api==1.45.1
+packaging==26.3
+pycparser==3.11
+pydantic==2.14.0
+pydantic_core==2.50.0
+PyJWT==2.15.1
+PyMySQL==1.2.3
+redis==8.1.0
+SQLAlchemy==2.1.4
+starlette==1.7.0
+typing-inspection==0.4.4
+typing_extensions==4.16.0
+uvicorn==0.54.0
