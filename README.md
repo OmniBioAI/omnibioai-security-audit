@@ -132,6 +132,11 @@ The merged architecture is represented through Alembic revisions
 Existing rows remain compatible: rows without authoritative tenant data are
 `tenant_scope=unknown`, and rows without a signature are `unsigned`.
 
+Migrations run as the dedicated `audit_migrator` account, and accounts are
+created as `root`@`localhost` over the MySQL socket; no step needs a
+network-reachable root. Privileges and commands:
+[docs/DATABASE_ACCOUNTS.md](docs/DATABASE_ACCOUNTS.md).
+
 ## Security properties
 
 - Tenant scope is server-derived and signed tenant data is integrity-bound.
