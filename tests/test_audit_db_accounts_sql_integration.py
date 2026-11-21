@@ -25,7 +25,7 @@ from pathlib import Path
 
 import pymysql
 import pytest
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine
 from sqlalchemy.engine.url import make_url
 
 from tests._mysql_integration_guard import (
@@ -223,8 +223,10 @@ def test_migrations_run_as_audit_migrator_only(throwaway_db):
         grants = _grants(_MIGRATOR)
         assert grants == sorted([
             f"GRANT USAGE ON *.* TO `{_MIGRATOR}`@`%`",
-            f"GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, INDEX, ALTER, TRIGGER ON `{throwaway_db}`.* "
-            f"TO `{_MIGRATOR}`@`%`",
+            (
+                f"GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, INDEX, ALTER, TRIGGER ON `{throwaway_db}`.* "
+                f"TO `{_MIGRATOR}`@`%`"
+            ),
         ])
 
         up = _alembic(throwaway_db, _MIGRATOR, password, "upgrade", "head")
