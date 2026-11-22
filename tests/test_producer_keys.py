@@ -20,12 +20,12 @@ JWT = "synthetic-platform-jwt-secret-for-tests-0001"
 MCP_KEY = "synthetic-mcp-producer-key-for-tests-0123456789"
 
 
-def _raw(service="omnibioai-mcp", event_id="evt-mcp-1"):
+def _raw(service="omnibioai-mcp", event_id="evt-mcp-1", event_type="mcp.tool_call"):
     return json.dumps({
         "event_id": event_id,
         "timestamp": "2026-11-22T12:00:00+00:00",
         "service": service,
-        "event_type": "mcp.tool_call",
+        "event_type": event_type,
         "user_id": "5",
         "organization_id": "1",
         "tenant_scope": "organization",
@@ -106,7 +106,7 @@ def test_missing_key_file_quarantines_mcp_events_and_leaves_others_alone(no_mcp_
     assert result is True and persisted is None
     _rejected(quarantined, "ProducerKeyUnavailable")
 
-    other = _raw(service="api-gateway", event_id="evt-gw-1")
+    other = _raw(service="api-gateway", event_id="evt-gw-1", event_type="request")
     result, persisted, quarantined, reader = _handle(
         {"data": other, "sig": sign_audit_event("api-gateway", other, JWT)}
     )
@@ -133,8 +133,38 @@ def test_mcp_service_without_producer_field_still_needs_the_mcp_key(mcp_key):
     assert quarantined is None and persisted["integrity_status"] == "valid"
 
 
+def test_mcp_event_type_under_a_look_alike_service_needs_the_mcp_key(mcp_key):
+    """Review N6: event_type mcp.* is reserved too, not only service omnibioai-mcp."""
+    raw = _raw(service="omnibioai-mcp2")
+    _, persisted, quarantined, _ = _handle(
+        {"data": raw, "sig": sign_audit_event("omnibioai-mcp2", raw, JWT)}
+    )
+    assert persisted is None
+    _rejected(quarantined, "ServiceNotOwnedByProducer")
+
+
+def test_legacy_event_types_are_not_routed():
+    assert pk.producer_for({}, "api-gateway", "request") is None
+    assert pk.producer_for({}, "tes", "tes_submit") is None
+    assert pk.producer_for({}, "lims", "mcpish_event") is None  # prefix is "mcp." with the dot
+    assert pk.producer_for({}, "x", "mcp.tool_call") == "mcp"
+
+
+def test_preload_reports_the_key_at_startup(mcp_key, capsys):
+    keys = pk.ProducerKeys(JWT)
+    pk.preload(keys)
+    assert "audit producer key for 'mcp' loaded" in capsys.readouterr().out
+    mcp_key.unlink()
+    assert keys.get("mcp") == MCP_KEY  # loaded once, at startup
+
+
+def test_preload_reports_a_missing_key_without_failing(no_mcp_key, capsys):
+    pk.preload(pk.ProducerKeys(JWT))
+    assert "unavailable (missing)" in capsys.readouterr().out
+
+
 def test_mcp_key_cannot_sign_for_another_service(mcp_key):
-    raw = _raw(service="api-gateway")
+    raw = _raw(service="api-gateway", event_type="request")
     _, persisted, quarantined, _ = _handle(
         {"data": raw, "sig": sign_audit_event("api-gateway", raw, MCP_KEY), "producer": "mcp"}
     )

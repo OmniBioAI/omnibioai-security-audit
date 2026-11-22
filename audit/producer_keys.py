@@ -15,10 +15,12 @@ mode-600 file, and its events are verified with that key ONLY:
 the producer's own secret instead of JWT_SECRET.
 
 An entry is routed to a registered producer when it declares one in the
-`producer` stream field, OR when its `service` is one the producer owns.
-The second rule closes the downgrade: an "omnibioai-mcp" event that omits
-`producer` is still verified with the mcp key, never with JWT_SECRET, so
-holding JWT_SECRET is not enough to forge MCP events. A producer may sign
+`producer` stream field, OR when its `service` is one the producer owns, OR
+when its `event_type` starts with one of the producer's prefixes ("mcp.").
+The last two close the downgrade: an "omnibioai-mcp" or "mcp.tool_call"
+event that omits `producer` (or uses a look-alike service name) is still
+verified with the mcp key, never with JWT_SECRET, so holding JWT_SECRET is
+not enough to forge MCP events. A producer may sign
 only for its own services, so holding the mcp key is not enough to forge
 another service's events either.
 
@@ -53,6 +55,8 @@ class ProducerSpec:
     services: frozenset[str]
     key_file_env: str
     default_key_file: str
+    # Event types reserved for this producer (prefix match), whatever the service.
+    event_type_prefixes: tuple[str, ...] = ()
 
 
 # Registered producers. Producers not listed here keep the JWT_SECRET path.
@@ -61,6 +65,7 @@ PRODUCERS: dict[str, ProducerSpec] = {
         services=frozenset({"omnibioai-mcp"}),
         key_file_env="AUDIT_PRODUCER_KEY_FILE_MCP",
         default_key_file="/run/secrets/audit_producer_mcp_key",
+        event_type_prefixes=("mcp.",),
     ),
 }
 
@@ -131,7 +136,7 @@ class ProducerKeys:
         return self._keys[producer]
 
 
-def producer_for(fields: dict, service: str | None) -> str | None:
+def producer_for(fields: dict, service: str | None, event_type: str | None = None) -> str | None:
     """The producer an entry must be verified as, or None for the legacy JWT_SECRET path.
 
     A declared but unregistered producer is returned as is (it is then quarantined).
@@ -142,7 +147,18 @@ def producer_for(fields: dict, service: str | None) -> str | None:
     for name, spec in PRODUCERS.items():
         if service in spec.services:
             return name
+        if spec.event_type_prefixes and isinstance(event_type, str) and event_type.startswith(
+            spec.event_type_prefixes
+        ):
+            return name
     return None
+
+
+def preload(keys: ProducerKeys) -> None:
+    """Load every registered producer's key now, so a missing one is reported at startup."""
+    for name in PRODUCERS:
+        if keys.get(name) is not None:
+            print(f"[WORKER] audit producer key for {name!r} loaded from {key_file_path(name)}")
 
 
 def verify_producer_event(

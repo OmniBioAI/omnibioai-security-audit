@@ -73,8 +73,9 @@ instead, and the worker verifies its events with that key only
 Wire format: `XADD audit:events * data <json> sig v1:<hmac> producer mcp`,
 with the unchanged v1 signature keyed by the producer's secret.
 
-- An entry is verified as producer `mcp` if it says `producer=mcp` or its
-  `service` is `omnibioai-mcp`, so omitting the field never falls back to
+- An entry is verified as producer `mcp` if it says `producer=mcp`, its
+  `service` is `omnibioai-mcp`, or its `event_type` starts with `mcp.`, so
+  omitting the field or using a look-alike service never falls back to
   `JWT_SECRET`.
 - Unknown producer, service not owned by the producer, no or wrong
   signature, or no usable key: the entry is quarantined
@@ -83,8 +84,9 @@ with the unchanged v1 signature keyed by the producer's secret.
   `audit_events`.
 - The key file must be a regular file owned by the worker's user (uid
   10001 in the image), mode 600, at least 32 bytes, and different from
-  `JWT_SECRET`. It is read once per worker process; restart the worker after
-  creating or rotating it. Without it the worker still runs: `mcp` events are
+  `JWT_SECRET`. It is read once per worker process, at startup (the worker
+  prints whether it loaded); restart the worker after creating or rotating
+  it. Without it the worker still runs: `mcp` events are
   quarantined, everything else is unaffected.
 - Entries with no `producer` field and no registered service take the
   existing `JWT_SECRET` path unchanged.

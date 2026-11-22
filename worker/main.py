@@ -17,6 +17,7 @@ from audit.config import AuditConfig
 from audit.producer_keys import (
     SIGNATURE_REJECTED,
     ProducerKeys,
+    preload,
     producer_for,
     verify_producer_event,
 )
@@ -152,7 +153,7 @@ def handle_message(reader: StreamReader, message_id: str, fields: dict) -> bool:
     # Registered producers (audit/producer_keys.py) are verified with their own
     # key only, and anything that does not verify is quarantined, not
     # persisted. Every other entry takes the JWT_SECRET path below, unchanged.
-    producer = producer_for(fields, event.service)
+    producer = producer_for(fields, event.service, event.event_type)
     if producer is not None:
         rejection = verify_producer_event(
             producer, event.service, fields.get("sig"), raw_data, _producer_keys
@@ -359,6 +360,8 @@ def _require_real_signing_secret() -> None:
 
 if __name__ == "__main__":
     _require_real_signing_secret()
+    # Non-fatal: a missing key only quarantines that producer's events.
+    preload(_producer_keys)
     print(
         f"[WORKER] starting audit consumer "
         f"(group={AuditConfig.CONSUMER_GROUP}, "
