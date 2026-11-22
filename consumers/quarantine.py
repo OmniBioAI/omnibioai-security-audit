@@ -59,11 +59,24 @@ class QuarantineSink:
     def __init__(self, db_session):
         self.db_session = db_session
 
-    def write(self, message_id: str, fields: dict, delivery_attempts: int) -> bool:
+    def write(
+        self,
+        message_id: str,
+        fields: dict,
+        delivery_attempts: int,
+        *,
+        failure_category: str | None = None,
+        failure_detail: str | None = None,
+    ) -> bool:
+        """failure_category/failure_detail, when given, replace the diagnosis
+        from classify_poison_reason() (e.g. "signature_rejected" from the
+        per-producer verification path); `service` is still parsed loosely."""
         integrity_key, integrity_key_id = AuditConfig.require_record_integrity_key()
         raw_data = fields.get("data")
         raw_signature = fields.get("sig")
-        failure_category, service, failure_detail = classify_poison_reason(raw_data)
+        diagnosed_category, service, diagnosed_detail = classify_poison_reason(raw_data)
+        if failure_category is None:
+            failure_category, failure_detail = diagnosed_category, diagnosed_detail
 
         # V2-003: same stored-record tamper-detection model as
         # consumers/sink.py -- poison evidence must not be easier to

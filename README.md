@@ -59,6 +59,36 @@ service, version, and exact Redis `data` string. The worker classifies each
 row as `valid`, `invalid`, or `unsigned`; legacy and currently unsigned events
 remain explicitly unverified evidence.
 
+## Per-producer verification keys
+
+Producers outside the platform's own services must not hold `JWT_SECRET`
+(it also signs access tokens). A *registered producer* signs with its own key
+instead, and the worker verifies its events with that key only
+(`audit/producer_keys.py`):
+
+| Producer id | Services it may sign for | Key file (worker) |
+|---|---|---|
+| `mcp` | `omnibioai-mcp` | `AUDIT_PRODUCER_KEY_FILE_MCP`, default `/run/secrets/audit_producer_mcp_key` |
+
+Wire format: `XADD audit:events * data <json> sig v1:<hmac> producer mcp`,
+with the unchanged v1 signature keyed by the producer's secret.
+
+- An entry is verified as producer `mcp` if it says `producer=mcp` or its
+  `service` is `omnibioai-mcp`, so omitting the field never falls back to
+  `JWT_SECRET`.
+- Unknown producer, service not owned by the producer, no or wrong
+  signature, or no usable key: the entry is quarantined
+  (`quarantined_audit_events`, `failure_category=signature_rejected`,
+  `failure_detail` = the reason), then acked. It is never written to
+  `audit_events`.
+- The key file must be a regular file owned by the worker's user (uid
+  10001 in the image), mode 600, at least 32 bytes, and different from
+  `JWT_SECRET`. It is read once per worker process; restart the worker after
+  creating or rotating it. Without it the worker still runs: `mcp` events are
+  quarantined, everything else is unaffected.
+- Entries with no `producer` field and no registered service take the
+  existing `JWT_SECRET` path unchanged.
+
 ## Durable storage
 
 Migration `0001_audit_events` created the SQL table and
