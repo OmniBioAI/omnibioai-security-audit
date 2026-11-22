@@ -14,12 +14,22 @@ import time
 from redis.exceptions import TimeoutError as RedisTimeoutError
 
 from audit.config import AuditConfig
+from audit.producer_keys import (
+    SIGNATURE_REJECTED,
+    ProducerKeys,
+    preload,
+    producer_for,
+    verify_producer_event,
+)
 from audit.security_alerts import emit_security_alert
 from consumers.processor import classify_event_integrity, parse_audit_event
 from consumers.quarantine import QuarantineSink
 from consumers.sink import Sink
 from consumers.stream_reader import StreamReader
 from db.session import SessionLocal
+
+# Per-producer verification keys (audit/producer_keys.py), read on first use.
+_producer_keys = ProducerKeys(AuditConfig.EVENT_SIGNING_SECRET)
 
 _last_nogroup_recreate_attempt: float | None = None  # no attempt yet; rate-limits recreate attempts
 
@@ -140,9 +150,33 @@ def handle_message(reader: StreamReader, message_id: str, fields: dict) -> bool:
         print(f"[WORKER] failed to parse message {message_id}: {e}")
         return False
 
-    integrity_status = classify_event_integrity(
-        event.service, fields.get("sig"), raw_data, AuditConfig.EVENT_SIGNING_SECRET
-    )
+    # Registered producers (audit/producer_keys.py) are verified with their own
+    # key only, and anything that does not verify is quarantined, not
+    # persisted. Every other entry takes the JWT_SECRET path below, unchanged.
+    producer = producer_for(fields, event.service, event.event_type)
+    if producer is not None:
+        rejection = verify_producer_event(
+            producer, event.service, fields.get("sig"), raw_data, _producer_keys
+        )
+        if rejection is not None:
+            print(
+                f"[WORKER] PRODUCER SIGNATURE REJECTED for message {message_id} "
+                f"(producer={producer!r}, service={event.service!r}, "
+                f"event_id={event.event_id!r}, reason={rejection}) -- quarantining"
+            )
+            return quarantine_and_ack(
+                reader,
+                message_id,
+                fields,
+                1,
+                failure_category=SIGNATURE_REJECTED,
+                failure_detail=rejection,
+            )
+        integrity_status = "valid"
+    else:
+        integrity_status = classify_event_integrity(
+            event.service, fields.get("sig"), raw_data, AuditConfig.EVENT_SIGNING_SECRET
+        )
     if integrity_status == "invalid":
         # Distinct from the plain print() convention elsewhere in this
         # file: this is not an infra blip, it's a signature that failed
@@ -168,7 +202,15 @@ def handle_message(reader: StreamReader, message_id: str, fields: dict) -> bool:
     return True
 
 
-def quarantine_and_ack(reader: StreamReader, message_id: str, fields: dict, delivery_attempts: int) -> bool:
+def quarantine_and_ack(
+    reader: StreamReader,
+    message_id: str,
+    fields: dict,
+    delivery_attempts: int,
+    *,
+    failure_category: str | None = None,
+    failure_detail: str | None = None,
+) -> bool:
     """V2-002: durably records a poison entry, then acks it -- never the
     other order. If the quarantine write itself fails (e.g. MySQL is
     the very thing that's down), the entry is left unacked: it stays in
@@ -182,10 +224,20 @@ def quarantine_and_ack(reader: StreamReader, message_id: str, fields: dict, deli
 
     Returns True if quarantined+acked, False if the quarantine write
     failed (message remains pending, not lost).
+
+    failure_category/failure_detail override the sink's own diagnosis:
+    handle_message() quarantines a registered producer's entry that fails
+    verification on its first delivery ("signature_rejected", see
+    audit/producer_keys.py), where retrying could never help.
     """
     db = SessionLocal()
     try:
-        QuarantineSink(db).write(message_id, fields, delivery_attempts)
+        override = (
+            {"failure_category": failure_category, "failure_detail": failure_detail}
+            if failure_category is not None
+            else {}
+        )
+        QuarantineSink(db).write(message_id, fields, delivery_attempts, **override)
     except Exception as e:  # noqa: BLE001 -- quarantine persistence failure must never crash the worker or ack the original
         print(
             f"[WORKER] failed to quarantine poison message {message_id}, "
@@ -308,6 +360,8 @@ def _require_real_signing_secret() -> None:
 
 if __name__ == "__main__":
     _require_real_signing_secret()
+    # Non-fatal: a missing key only quarantines that producer's events.
+    preload(_producer_keys)
     print(
         f"[WORKER] starting audit consumer "
         f"(group={AuditConfig.CONSUMER_GROUP}, "
